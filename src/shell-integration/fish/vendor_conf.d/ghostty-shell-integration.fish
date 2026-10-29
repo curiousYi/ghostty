@@ -134,6 +134,63 @@ function __ghostty_setup --on-event fish_prompt -d "Setup ghostty integration"
         end
     end
 
+    # ghostty-ai
+    #
+    # Ask Ghostty to send the last N commands and their output to the
+    # configured LLM tool, with an optional note:
+    #
+    #   ghostty-ai [count] [note...]
+    #
+    # The first argument is the count only if it is a whole number from 1 to
+    # 99 without a leading zero. Anything else (404, 2fa, -3, 05) starts the
+    # note. A leading `--` ends option parsing, so everything after it is the
+    # note. The request is sent as `OSC 6767 ; ai ; count=N ; note=BASE64 ST`.
+    # The note is base64-encoded, so it can't break out of the sequence.
+    function ghostty-ai -d "Send recent commands and a note to ghostty-ai-command"
+        switch "$argv[1]"
+            case -h --help
+                printf '%s\n' \
+                    "usage: ghostty-ai [count] [--] [note...]" \
+                    "" \
+                    "Send the last count (1-99, default 5) commands and their output" \
+                    "to the configured ghostty-ai-command, with an optional note." \
+                    "Use -- before a note that starts with a number or a dash."
+                return 0
+        end
+
+        set -l count 5
+        if string match -qr '^[1-9][0-9]?$' -- "$argv[1]"
+            set count $argv[1]
+            set -e argv[1]
+        end
+
+        if test "$argv[1]" = --
+            set -e argv[1]
+        end
+
+        # Join the remaining arguments with single spaces. A quoted list
+        # expansion does this without splitting on newlines in the note.
+        set -l note "$argv"
+        if test -n "$note"
+            set -l b64 (printf '%s' "$note" | command base64 | string join '' | string replace -a \r '')
+            if test -z "$b64"
+                echo "ghostty-ai: base64 failed to encode the note" >&2
+                return 1
+            end
+            # Count bytes from the base64 length so the locale doesn't matter.
+            set -l len (math (string length -- $b64) / 4 \* 3)
+            string match -q -- '*=' $b64; and set len (math $len - 1)
+            string match -q -- '*==' $b64; and set len (math $len - 1)
+            if test $len -gt 255
+                echo "ghostty-ai: the note is $len bytes, the limit is 255" >&2
+                return 1
+            end
+            printf '\e]6767;ai;count=%s;note=%s\e\\\\' $count $b64
+        else
+            printf '\e]6767;ai;count=%s\e\\\\' $count
+        end
+    end
+
     # Setup prompt marking
     function __ghostty_mark_prompt_start --on-event fish_prompt --on-event fish_posterror
         # If we never got the output end event, then we need to send it now.
