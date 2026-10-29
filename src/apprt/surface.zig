@@ -57,6 +57,22 @@ pub const Message = union(enum) {
         }
     };
 
+    /// A fixed-size ghostty-ai request (OSC 6767 `ai`) sent to the app
+    /// thread. The OSC parser has already validated it.
+    pub const GhosttyAiRequest = struct {
+        /// How many commands to capture, 1-99.
+        count: u8,
+
+        /// The decoded note: UTF-8, NUL-terminated, may be empty.
+        note: [255:0]u8,
+
+        pub fn init(count: u8, note: []const u8) GhosttyAiRequest {
+            var result: GhosttyAiRequest = .{ .count = count, .note = undefined };
+            DesktopNotification.copyUtf8Z(result.note.len, &result.note, note);
+            return result;
+        }
+    };
+
     /// Set the title of the surface.
     /// TODO: we should change this to a "WriteReq" style structure in
     /// the termio message so that we can more efficiently send strings
@@ -108,6 +124,10 @@ pub const Message = union(enum) {
 
     /// Show a desktop notification.
     desktop_notification: DesktopNotification,
+
+    /// A program asked Ghostty to hand recent commands to the configured
+    /// LLM tool (OSC 6767 `ai`).
+    ghostty_ai_request: GhosttyAiRequest,
 
     /// Health status change for the renderer.
     renderer_health: renderer.Health,
@@ -253,6 +273,19 @@ test "DesktopNotification init" {
 
     try std.testing.expectEqualStrings("Title", std.mem.sliceTo(&notification.title, 0));
     try std.testing.expectEqualStrings("Body", std.mem.sliceTo(&notification.body, 0));
+}
+
+test "GhosttyAiRequest init" {
+    const req = Message.GhosttyAiRequest.init(7, "why?");
+    try std.testing.expectEqual(@as(u8, 7), req.count);
+    try std.testing.expectEqualStrings("why?", std.mem.sliceTo(&req.note, 0));
+
+    const empty = Message.GhosttyAiRequest.init(1, "");
+    try std.testing.expectEqualStrings("", std.mem.sliceTo(&empty.note, 0));
+
+    const full: [255]u8 = @splat('a');
+    const max = Message.GhosttyAiRequest.init(99, &full);
+    try std.testing.expectEqualStrings(&full, std.mem.sliceTo(&max.note, 0));
 }
 
 test "copyUtf8Z handles len at the final byte of every UTF-8 sequence length" {

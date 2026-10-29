@@ -1151,6 +1151,11 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             try self.showDesktopNotification(title, body);
         },
 
+        // ghostty-ai: stub, replaced in integration
+        .ghostty_ai_request => |req| {
+            log.info("ghostty-ai request received and ignored count={d}", .{req.count});
+        },
+
         .redraw => self.redraw(),
 
         .renderer_health => |health| self.updateRendererHealth(health),
