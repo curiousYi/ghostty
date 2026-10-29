@@ -46,6 +46,38 @@ conflicts. Only the integration step touches `src/Surface.zig`.
 
 WS-G can start immediately, even before Step 0.
 
+### Worktrees and merge order
+
+- Each of WS-A through WS-F is developed in its own git worktree, on a branch
+  cut from `ghostty-ai` after Step 0 is committed. WS-G lives outside the repo
+  and needs no worktree.
+- Merge the worktrees into `ghostty-ai` **one at a time**, rebasing each onto
+  the current branch first so history stays linear. Run that workstream's
+  targeted tests after each merge, so a breakage shows up at the merge that
+  caused it.
+- Merge order: **E** (config) → **A** (capture) → **C** (OSC) → **D** (shell) →
+  **B** (keybind) → **F** (split action) → **Step 2** integration, done
+  directly on `ghostty-ai`.
+- Build cost: each worktree has its own `.zig-cache`, so its first build is
+  cold. Only WS-F builds the macOS app. Every other workstream uses
+  `-Demit-macos-app=false` and targeted `-Dtest-filter` runs.
+
+### Stub convention
+
+Zig switches must be exhaustive. A workstream that adds a new enum or union
+case therefore won't compile until every switch over it handles the case:
+
+- WS-B adds a binding action, which `Surface.performBindingAction` must handle.
+- WS-C adds a surface message, which `Surface.handleMessage` must handle.
+- WS-F adds an apprt action, which each apprt's `performAction` must handle.
+
+Each of these workstreams adds a **minimal stub** wherever the compiler asks for
+one, outside the files it owns. A stub either returns `false` (not performed)
+or logs that the case is unimplemented and ignores it. Mark every stub with
+`// ghostty-ai: stub, replaced in integration` so Step 2 can find them all with
+grep. Stubs may cause one- or two-line merge conflicts in `Surface.zig`;
+resolve them during the rebase. Step 2 replaces every stub with real handling.
+
 ## Step 0: freeze contracts
 
 Settle these before the parallel work starts. Each workstream codes against them.
@@ -227,8 +259,8 @@ ghostty-ai-access = allow   # allow | deny
 
 ## Process
 
-- Local branch `ghostty-ai`. One commit per workstream; integration is its own
-  commit.
+- Local branch `ghostty-ai`. One commit per workstream, merged in the order
+  under "Worktrees and merge order"; integration is its own commit.
 - No issues or PRs. AI assistance is disclosed per `AI_POLICY.md`.
 - The user writes the "why users will like this" summary themselves.
 - The final report follows the brief: changes file by file, how the capture
