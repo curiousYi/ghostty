@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 
 const glib = @import("glib");
 
+const apprt = @import("../../../apprt.zig");
 const cli = @import("../../../cli.zig");
 const configpkg = @import("../../../config.zig");
 
@@ -16,11 +17,20 @@ shell_integration: ?configpkg.Config.ShellIntegration,
 working_directory: ?[:0]const u8,
 title: ?[:0]const u8,
 
+/// Extra environment variables for the command. Borrowed; the surface
+/// copies them. Not set by `parse`.
+env: []const apprt.action.EnvVar = &.{},
+
+/// Keep the surface open after the command exits. Not set by `parse`.
+wait_after_command: bool = false,
+
 pub const none: Overrides = .{
     .command = null,
     .shell_integration = null,
     .working_directory = null,
     .title = null,
+    .env = &.{},
+    .wait_after_command = false,
 };
 
 pub fn parse(arena_alloc: Allocator, arguments_it: *glib.VariantIter) ParseError!Overrides {

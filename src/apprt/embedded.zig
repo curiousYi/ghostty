@@ -315,6 +315,23 @@ pub const App = struct {
             action,
             value,
         });
+
+        // new_split_command's C value points at details that must outlive
+        // the callback, so we keep them on our stack for the call.
+        if (comptime action == .new_split_command) {
+            const alloc = self.core_app.alloc;
+            var storage: apprt.action.NewSplitCommand.CStorage = try .init(alloc, value);
+            defer storage.deinit(alloc);
+            return self.opts.action(
+                self,
+                target.cval(),
+                .{
+                    .key = .new_split_command,
+                    .value = .{ .new_split_command = storage.cval(value.direction) },
+                },
+            );
+        }
+
         return self.opts.action(
             self,
             target.cval(),
