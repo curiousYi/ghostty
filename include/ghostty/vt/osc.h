@@ -155,6 +155,13 @@ typedef enum GHOSTTY_ENUM_TYPED {
    * instead (see GhosttyTerminalProgramStatus).
    */
   GHOSTTY_OSC_COMMAND_PROGRAM_STATUS = 28,
+
+  /**
+   * A Ghostty-private request (OSC 6767 with the `ai` subcommand) asking
+   * the terminal to hand recent command history to an LLM tool. The OSC
+   * parser only identifies this command.
+   */
+  GHOSTTY_OSC_COMMAND_GHOSTTY_AI = 29,
   GHOSTTY_OSC_COMMAND_TYPE_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyOscCommandType;
 

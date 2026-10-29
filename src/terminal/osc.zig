@@ -178,6 +178,11 @@ pub const Command = union(Key) {
     /// terminal supports the protocol. See `ProgramStatus`.
     program_status: ProgramStatus,
 
+    /// Ghostty-private request (OSC 6767, subcommand `ai`). Asks Ghostty
+    /// to hand the last `count` commands to the configured LLM tool.
+    /// See `parsers.ghostty`.
+    ghostty_ai: GhosttyAi,
+
     pub const SemanticPrompt = parsers.semantic_prompt.Command;
     pub const HierarchicalContext = parsers.hierarchical_context.Command;
 
@@ -188,6 +193,8 @@ pub const Command = union(Key) {
     pub const KittyDesktopNotification = parsers.kitty_desktop_notification.OSC;
 
     pub const ProgramStatus = parsers.program_status.Command;
+
+    pub const GhosttyAi = parsers.ghostty.Ai;
 
     pub const Key = LibEnum(
         lib.target,
@@ -222,6 +229,7 @@ pub const Command = union(Key) {
             "kitty_desktop_notification",
             "unknown",
             "program_status",
+            "ghostty_ai",
         },
     );
 
@@ -464,6 +472,9 @@ pub const Parser = struct {
         @"52",
         @"55",
         @"66",
+        @"67",
+        @"676",
+        @"6767",
         @"72",
         @"75",
         @"750",
@@ -556,6 +567,7 @@ pub const Parser = struct {
             .hierarchical_context,
             .unknown,
             .program_status,
+            .ghostty_ai,
             => {},
         }
 
@@ -971,6 +983,22 @@ pub const Parser = struct {
 
             .@"6" => switch (c) {
                 '6' => self.state = .@"66",
+                '7' => self.state = .@"67",
+                else => self.unknownOrInvalid(c),
+            },
+
+            .@"67" => switch (c) {
+                '6' => self.state = .@"676",
+                else => self.unknownOrInvalid(c),
+            },
+
+            .@"676" => switch (c) {
+                '7' => self.state = .@"6767",
+                else => self.unknownOrInvalid(c),
+            },
+
+            .@"6767" => switch (c) {
+                ';' => self.captureTrailing(.fixed),
                 else => self.unknownOrInvalid(c),
             },
 
@@ -1114,6 +1142,8 @@ pub const Parser = struct {
             .@"55",
             .@"552",
             .@"6",
+            .@"67",
+            .@"676",
             .@"75",
             .@"750",
             .@"77",
@@ -1170,6 +1200,8 @@ pub const Parser = struct {
             .@"3008" => parsers.hierarchical_context.parse(self, terminator_ch),
 
             .@"66" => parsers.kitty_text_sizing.parse(self, terminator_ch),
+
+            .@"6767" => parsers.ghostty.parse(self, terminator_ch),
 
             .@"72" => parsers.kitty_dnd_protocol.parse(self, terminator_ch),
 
