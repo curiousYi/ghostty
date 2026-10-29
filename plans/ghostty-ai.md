@@ -33,7 +33,7 @@ conflicts. Only the integration step touches `src/Surface.zig`.
 
 | Workstream | Files touched | Depends on |
 | --- | --- | --- |
-| Step 0: contracts | this file | nothing |
+| Step 0: contracts (done) | this file | nothing |
 | WS-A capture core | `src/terminal/Screen.zig` (maybe `PageList.zig` helpers) | Step 0 |
 | WS-B keybind parse | `src/input/Binding.zig` | Step 0 |
 | WS-C OSC parser | `src/terminal/osc.zig`, `src/terminal/osc/parsers/ghostty.zig` (new), `src/terminal/stream.zig`, `src/termio/stream_handler.zig`, `src/apprt/surface.zig` (Message) | Step 0 |
@@ -78,28 +78,154 @@ or logs that the case is unimplemented and ignores it. Mark every stub with
 grep. Stubs may cause one- or two-line merge conflicts in `Surface.zig`;
 resolve them during the rebase. Step 2 replaces every stub with real handling.
 
-## Step 0: freeze contracts
+## Step 0: contracts (frozen)
 
-Settle these before the parallel work starts. Each workstream codes against them.
+Each workstream codes against these. Changing one means updating this section
+first and telling every workstream that depends on it.
 
-1. **Capture API** (WS-A provides, Step 2 consumes):
-   `Screen.selectCommands(self: *Screen, count: u16, opts: struct { exclude_active: bool }) ?Selection`.
-   Returns `null` when there are no prompt marks or the screen is the alternate
-   screen.
-2. **Keybind action** (WS-B): `write_command_file: WriteCommand` where
-   `WriteCommand = struct { action: WriteScreen.Action, format: WriteScreen.Format, count: u16 = 1 }`.
-3. **OSC wire format** (WS-C parses, WS-D emits):
-   `OSC <n> ; ai ; count=<1-99> ; note=<base64> ST`. `<n>` is one namespaced
-   Ghostty-private number. Pick an unused one and check it against xterm
-   ctlseqs, kitty, iTerm2, WezTerm, and the 3008/7501 specs Ghostty already
-   parses. Record the choice and the reasoning here.
-4. **Surface message** (WS-C produces, Step 2 consumes):
-   `apprt.surface.Message.ghostty_ai_request { count: u16, note: <bounded buffer> }`.
-5. **apprt action** (WS-F provides, Step 2 consumes): `new_split_command` with
-   payload `{ direction: SplitDirection, command: [:0]const u8, env: []const EnvVar, title: [:0]const u8 }`
-   and a C ABI struct to match in `include/ghostty.h`.
-6. **Config names** (WS-E): `ghostty-ai-command: ?Command` and
-   `ghostty-ai-access: enum { allow, deny }`.
+### C0.1 Capture API (WS-A provides, Step 2 consumes)
+
+In `src/terminal/Screen.zig`:
+
+```zig
+pub const SelectCommandsOptions = struct {
+    /// When true, exclude the command at the active prompt, even if it
+    /// is running. The OSC path uses this, because the active command is
+    /// `ghostty-ai` itself. The keybind path leaves it false, so a
+    /// running command counts as #1.
+    exclude_active: bool = false,
+};
+
+/// Returns null when there are no prompt marks or the alternate screen
+/// is active.
+pub fn selectCommands(self: *Screen, count: u16, opts: SelectCommandsOptions) ?Selection
+```
+
+An idle current prompt, where nothing has been executed, is always excluded.
+
+### C0.2 Keybind action (WS-B)
+
+In `src/input/Binding.zig`:
+
+```zig
+write_command_file: WriteCommand,
+
+pub const WriteCommand = struct {
+    action: WriteScreen.Action,   // copy | paste | open
+    emit: WriteScreen.Format,     // plain | vt | html; default .plain
+    count: u16,                   // default 1, 0 is a parse error
+};
+```
+
+The field is named `emit` to match `WriteScreen`. Syntax:
+`write_command_file:<action>[,<format>][,<count>]`. Each argument after the
+action is recognized by its type (format enum or integer), so `copy,5` works.
+
+### C0.3 OSC wire format (WS-C parses, WS-D emits)
+
+```
+ESC ] 6767 ; ai ; count=<n> ; note=<base64> ST
+```
+
+- **Number: 6767.** It is not defined by xterm (which uses numbers up to 119),
+  WezTerm, mintty (`440`, `701`, `77xx`, `77119`), iTerm2 (`1337`), kitty
+  (`5113`, `5522`, `30001`, `30101`, plus low numbers), VS Code (`633`),
+  ConEmu (`9`), rxvt (`7xx`), or the `3008`/`7501` specs that Ghostty
+  already parses. A web search for "OSC 6767" finds nothing. There is no
+  formal OSC registry (terminal-wg issue #10 asks for one), so this is a best
+  effort check.
+- **Namespace:** the first field (`ai`) is a subcommand. Any future
+  Ghostty-private request reuses `6767` with a new subcommand. An unknown
+  subcommand is ignored and logged.
+- **Fields:** `key=value` pairs separated by `;`, in any order. Each key may
+  appear at most once.
+  - `count` is required, a decimal integer from 1 to 99.
+  - `note` is optional, standard base64 (RFC 4648, padded), and must decode
+    to valid UTF-8 of at most **255 bytes**. An empty or missing note means
+    no note.
+  - Unknown keys are ignored, which leaves room for later additions.
+  - A duplicate key, a malformed count, bad base64, invalid UTF-8, or an
+    oversized note makes the request invalid. Invalid requests are dropped
+    and logged.
+- **Terminators:** both ST (`ESC \`) and BEL are accepted, as with other OSCs.
+  The shell functions emit ST.
+- **Note limit:** the shell function rejects a note longer than 255 bytes
+  with an error on stderr, instead of truncating it silently. 255 bytes
+  matches `DesktopNotification.body` and keeps the surface message
+  fixed-size.
+
+### C0.4 Surface message (WS-C produces, Step 2 consumes)
+
+In `src/apprt/surface.zig`, modelled on `DesktopNotification`:
+
+```zig
+ghostty_ai_request: GhosttyAiRequest,
+
+pub const GhosttyAiRequest = struct {
+    count: u8,           // 1-99, already validated by the parser
+    note: [255:0]u8,     // UTF-8, NUL-terminated, may be empty
+};
+```
+
+### C0.5 apprt action (WS-F provides, Step 2 consumes)
+
+The C action union must stay at most 24 bytes (an assertion in
+`src/apprt/action.zig` checks this). So the payload is a direction plus a
+pointer to a details struct, not the strings themselves:
+
+```zig
+new_split_command: NewSplitCommand,
+
+pub const NewSplitCommand = struct {
+    direction: SplitDirection,
+    command: [:0]const u8,       // run via /bin/sh -c
+    env: []const EnvVar,         // { key: [:0]const u8, value: [:0]const u8 }
+    title: [:0]const u8,         // becomes the user title override
+
+    pub const C = extern struct {
+        direction: SplitDirection,
+        details: *const Details,
+    };
+    pub const Details = extern struct {
+        command: [*:0]const u8,
+        env_vars: [*]const EnvVar.C,   // same layout as ghostty_env_var_s
+        env_var_count: usize,
+        title: [*:0]const u8,
+    };
+};
+```
+
+C mirror in `include/ghostty.h`: `ghostty_action_new_split_command_s` and
+`ghostty_action_new_split_command_details_s`, reusing the existing
+`ghostty_env_var_s`. Every pointer is valid only for the duration of the
+`performAction` call, so the apprt copies whatever it keeps. This is the same
+rule `open_url` follows.
+
+### C0.6 Config (WS-E)
+
+In `src/config/Config.zig`:
+
+```zig
+@"ghostty-ai-command": ?Command = <default from WS-E>,
+@"ghostty-ai-access": GhosttyAiAccess = .allow,
+
+pub const GhosttyAiAccess = enum { allow, deny };
+```
+
+`Command` is the existing `src/config/command.zig` type. The default uses the
+`shell:` form, so `$GHOSTTY_AI_*` expand.
+
+### C0.7 Environment for the child (Step 2 sets, WS-F passes through)
+
+| Variable | Value |
+| --- | --- |
+| `GHOSTTY_AI_FILE` | absolute path of the 0600 capture file |
+| `GHOSTTY_AI_NOTE` | the decoded note, possibly empty |
+| `GHOSTTY_AI_PARENT` | decimal id used for one-at-a-time tracking; private |
+
+### C0.8 Stub marker
+
+Every stub is marked `// ghostty-ai: stub, replaced in integration`.
 
 ## Layer 1: capture core and keybind
 
@@ -269,7 +395,8 @@ ghostty-ai-access = allow   # allow | deny
 
 ## Open questions
 
-- Which OSC number to use (decided during Step 0).
+- None blocking. OSC 6767 is a best-effort pick because no registry exists.
+  Upstream may prefer a different number during design discussion.
 
 ## Follow-ups (out of scope for v1)
 
