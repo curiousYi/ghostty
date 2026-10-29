@@ -3608,6 +3608,102 @@ pub fn selectOutput(self: *Screen, pin: Pin) ?Selection {
     return .init(hl.start, hl.end, false);
 }
 
+pub const SelectCommandsOptions = struct {
+    /// When true, exclude the command at the active prompt, even if it
+    /// is running. The OSC path uses this, because the active command is
+    /// `ghostty-ai` itself. The keybind path leaves it false, so a
+    /// running command counts as #1.
+    exclude_active: bool = false,
+};
+
+/// Select the last `count` commands: each command's prompt, input, and
+/// full output, as determined by semantic prompt information provided by
+/// shell integration. The result is one contiguous selection from the
+/// first row of the oldest selected prompt to the last non-blank cell of
+/// the most recent output. Soft-wrapped lines are included in full.
+///
+/// The "active" command is the one whose prompt is at or above the cursor.
+/// If the cursor is still at that prompt (nothing has been executed), it
+/// is always excluded. If the command is running, it counts as the first
+/// command and its output is included up to the end of the cursor row,
+/// unless `opts.exclude_active` is set.
+///
+/// If fewer than `count` commands exist, all of them are selected.
+///
+/// Returns null when there are no prompt marks, when `count` is zero, or
+/// when excluding the active command leaves nothing to select.
+///
+/// The screen doesn't know whether it is the primary or alternate screen,
+/// so callers must check that themselves and not call this for the
+/// alternate screen.
+pub fn selectCommands(
+    self: *Screen,
+    count: u16,
+    opts: SelectCommandsOptions,
+) ?Selection {
+    if (count == 0) return null;
+
+    // If we've never seen a prompt then the prompt iterator below would
+    // scan the entire scrollback only to find nothing.
+    if (!self.semantic_prompt.seen) return null;
+
+    // Walk prompts upwards from the cursor. The first prompt we find is
+    // the active one: either the prompt the cursor is idle at, or the
+    // prompt of the command that is currently running.
+    const cursor_pin = self.cursor.page_pin.*;
+    var it = cursor_pin.promptIterator(.left_up, null);
+    const active = it.next() orelse return null;
+
+    // The start is the first row of the oldest prompt we select and
+    // the end is the last cell we consider part of the newest output.
+    // The end is trimmed of trailing whitespace below.
+    var start: Pin = undefined;
+    var end: Pin = undefined;
+    var found: u16 = 0;
+    if (!opts.exclude_active and !self.cursorIsAtPrompt()) {
+        // The active command is running, it counts as #1 and its
+        // output runs up to the cursor.
+        start = active;
+        end = cursor_pin;
+        end.x = end.node.cols() - 1;
+        found = 1;
+    } else {
+        // The active command is excluded, so the newest output ends
+        // just before the active prompt.
+        end = active.up(1) orelse return null;
+        end.x = end.node.cols() - 1;
+    }
+
+    // Keep walking back until we have count commands or run out.
+    while (found < count) : (found += 1) {
+        start = it.next() orelse break;
+    }
+    if (found == 0) return null;
+
+    // Trim our trailing whitespace
+    var cell_it = end.cellIterator(.left_up, start);
+    while (cell_it.next()) |p| {
+        const cell = p.rowAndCell().cell;
+        end = p;
+        if (cell.hasText()) break;
+    }
+
+    return .init(start, end, false);
+}
+
+/// Returns true if the cursor is at a prompt (prompt or input) rather
+/// than in command output. This matches Terminal.cursorIsAtPrompt except
+/// for the alternate screen check, which the screen can't do itself.
+fn cursorIsAtPrompt(self: *const Screen) bool {
+    // If our page row is a prompt then we're always at a prompt
+    if (self.cursor.page_row.semantic_prompt != .none) return true;
+
+    return switch (self.cursor.semantic_content) {
+        .input, .prompt => true,
+        .output => false,
+    };
+}
+
 pub const LineIterator = struct {
     screen: *const Screen,
     current: ?Pin = null,
@@ -10907,6 +11003,353 @@ test "Screen: selectOutput" {
             .y = 8,
         } }).?) == null);
     }
+}
+
+/// Test helper: writes a complete command (prompt, input, output) the
+/// way shell integration marks it with OSC 133 A, B, and C.
+fn testWriteCommand(
+    s: *Screen,
+    prompt: []const u8,
+    input: []const u8,
+    output: []const u8,
+) !void {
+    s.cursorSetSemanticContent(.{ .prompt = .initial });
+    try s.testWriteString(prompt);
+    s.cursorSetSemanticContent(.{ .input = .clear_explicit });
+    try s.testWriteString(input);
+    try s.testWriteString("\n");
+
+    // The newline above marked this row as a prompt continuation since
+    // we were in input. Terminal unmarks it on OSC 133 C at column 0,
+    // so do the same here.
+    s.cursorSetSemanticContent(.output);
+    s.cursor.page_row.semantic_prompt = .none;
+    try s.testWriteString(output);
+}
+
+/// Test helper: writes an idle prompt with the cursor at its input.
+fn testWriteIdlePrompt(s: *Screen, prompt: []const u8, input: []const u8) !void {
+    s.cursorSetSemanticContent(.{ .prompt = .initial });
+    try s.testWriteString(prompt);
+    s.cursorSetSemanticContent(.{ .input = .clear_explicit });
+    try s.testWriteString(input);
+}
+
+/// Test helper: the selectCommands selection as a string, or null.
+fn testSelectCommandsString(
+    s: *Screen,
+    alloc: Allocator,
+    count: u16,
+    opts: SelectCommandsOptions,
+) !?[:0]const u8 {
+    const sel = s.selectCommands(count, opts) orelse return null;
+    return try s.selectionString(alloc, .{ .sel = sel, .trim = false });
+}
+
+test "Screen: selectCommands count 1" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    try testWriteCommand(&s, "$ ", "cmd1", "out1\n");
+    try testWriteCommand(&s, "$ ", "cmd2", "out2a\nout2b\n");
+    try testWriteIdlePrompt(&s, "$ ", "");
+
+    {
+        const str = (try testSelectCommandsString(&s, alloc, 1, .{})).?;
+        defer alloc.free(str);
+        try testing.expectEqualStrings("$ cmd2\nout2a\nout2b", str);
+    }
+    {
+        const str = (try testSelectCommandsString(&s, alloc, 2, .{})).?;
+        defer alloc.free(str);
+        try testing.expectEqualStrings(
+            "$ cmd1\nout1\n$ cmd2\nout2a\nout2b",
+            str,
+        );
+    }
+}
+
+test "Screen: selectCommands count larger than history" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    // Output from before shell integration started isn't a command.
+    try s.testWriteString("motd\n");
+    try testWriteCommand(&s, "$ ", "cmd1", "out1\n");
+    try testWriteCommand(&s, "$ ", "cmd2", "out2\n");
+    try testWriteIdlePrompt(&s, "$ ", "");
+
+    const str = (try testSelectCommandsString(&s, alloc, 10, .{})).?;
+    defer alloc.free(str);
+    try testing.expectEqualStrings("$ cmd1\nout1\n$ cmd2\nout2", str);
+}
+
+test "Screen: selectCommands count zero" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    try testWriteCommand(&s, "$ ", "cmd1", "out1\n");
+    try testWriteIdlePrompt(&s, "$ ", "");
+    try testing.expect(s.selectCommands(0, .{}) == null);
+}
+
+test "Screen: selectCommands soft-wrapped prompt, input, and output" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 10, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    // Both the input and the output soft-wrap. The wrapped input row is
+    // marked as a prompt continuation, which must not count as its own
+    // command or the selection would start mid-command.
+    try testWriteCommand(&s, "$ ", "cmd1", "out1\n");
+    try testWriteCommand(
+        &s,
+        "$ ",
+        "echo aaaaaaaaaaaa",
+        "aaaaaaaaaaaaaaaaaaaaaaaaa\n",
+    );
+    try testWriteIdlePrompt(&s, "$ ", "");
+
+    // Prove the wrapping actually happened.
+    {
+        const list_cell = s.pages.getCell(.{ .active = .{ .x = 0, .y = 2 } }).?;
+        try testing.expect(list_cell.row.wrap);
+        try testing.expectEqual(.prompt, list_cell.row.semantic_prompt);
+    }
+    {
+        const list_cell = s.pages.getCell(.{ .active = .{ .x = 0, .y = 3 } }).?;
+        try testing.expect(list_cell.row.wrap_continuation);
+        try testing.expectEqual(.prompt_continuation, list_cell.row.semantic_prompt);
+    }
+    {
+        const list_cell = s.pages.getCell(.{ .active = .{ .x = 0, .y = 4 } }).?;
+        try testing.expect(list_cell.row.wrap);
+    }
+
+    {
+        const str = (try testSelectCommandsString(&s, alloc, 1, .{})).?;
+        defer alloc.free(str);
+        try testing.expectEqualStrings(
+            "$ echo aaaaaaaaaaaa\naaaaaaaaaaaaaaaaaaaaaaaaa",
+            str,
+        );
+    }
+    {
+        const str = (try testSelectCommandsString(&s, alloc, 2, .{})).?;
+        defer alloc.free(str);
+        try testing.expectEqualStrings(
+            "$ cmd1\nout1\n$ echo aaaaaaaaaaaa\naaaaaaaaaaaaaaaaaaaaaaaaa",
+            str,
+        );
+    }
+}
+
+test "Screen: selectCommands multi-line prompt" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    // A two-line prompt: the second line is a prompt continuation.
+    try testWriteCommand(&s, "$ ", "cmd1", "out1\n");
+    try testWriteCommand(&s, "~/code\n$ ", "cmd2", "out2\n");
+    try testWriteIdlePrompt(&s, "~/code\n$ ", "");
+
+    const str = (try testSelectCommandsString(&s, alloc, 1, .{})).?;
+    defer alloc.free(str);
+    try testing.expectEqualStrings("~/code\n$ cmd2\nout2", str);
+}
+
+test "Screen: selectCommands no shell integration" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    try s.testWriteString("$ cmd1\nout1\n$ cmd2\nout2\n$ ");
+    try testing.expect(s.selectCommands(1, .{}) == null);
+    try testing.expect(s.selectCommands(1, .{ .exclude_active = true }) == null);
+}
+
+test "Screen: selectCommands idle prompt excluded" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    // Partially typed input at the idle prompt isn't a command.
+    try testWriteCommand(&s, "$ ", "cmd1", "out1\n");
+    try testWriteIdlePrompt(&s, "$ ", "half-typed");
+
+    const str = (try testSelectCommandsString(&s, alloc, 1, .{})).?;
+    defer alloc.free(str);
+    try testing.expectEqualStrings("$ cmd1\nout1", str);
+}
+
+test "Screen: selectCommands only an idle prompt" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    try s.testWriteString("motd\n");
+    try testWriteIdlePrompt(&s, "$ ", "");
+    try testing.expect(s.selectCommands(5, .{}) == null);
+}
+
+test "Screen: selectCommands running command counts as first" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    // The last command is still running: there is no new prompt and
+    // the cursor is in its output.
+    try testWriteCommand(&s, "$ ", "cmd1", "out1\n");
+    try testWriteCommand(&s, "$ ", "make", "building\npartial");
+
+    {
+        const str = (try testSelectCommandsString(&s, alloc, 1, .{})).?;
+        defer alloc.free(str);
+        try testing.expectEqualStrings("$ make\nbuilding\npartial", str);
+    }
+    {
+        const str = (try testSelectCommandsString(&s, alloc, 2, .{})).?;
+        defer alloc.free(str);
+        try testing.expectEqualStrings(
+            "$ cmd1\nout1\n$ make\nbuilding\npartial",
+            str,
+        );
+    }
+}
+
+test "Screen: selectCommands running command without output" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    // A running command that hasn't printed anything yet still counts.
+    try testWriteCommand(&s, "$ ", "cmd1", "out1\n");
+    try testWriteCommand(&s, "$ ", "sleep 10", "");
+
+    const str = (try testSelectCommandsString(&s, alloc, 1, .{})).?;
+    defer alloc.free(str);
+    try testing.expectEqualStrings("$ sleep 10", str);
+}
+
+test "Screen: selectCommands exclude_active" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 30, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    // The running command is the one asking for the capture.
+    try testWriteCommand(&s, "$ ", "cmd1", "out1\n");
+    try testWriteCommand(&s, "$ ", "cmd2", "out2\n");
+    try testWriteCommand(&s, "$ ", "ghostty-ai 1 why", "");
+
+    {
+        const str = (try testSelectCommandsString(
+            &s,
+            alloc,
+            1,
+            .{ .exclude_active = true },
+        )).?;
+        defer alloc.free(str);
+        try testing.expectEqualStrings("$ cmd2\nout2", str);
+    }
+    {
+        const str = (try testSelectCommandsString(
+            &s,
+            alloc,
+            5,
+            .{ .exclude_active = true },
+        )).?;
+        defer alloc.free(str);
+        try testing.expectEqualStrings("$ cmd1\nout1\n$ cmd2\nout2", str);
+    }
+}
+
+test "Screen: selectCommands exclude_active idle prompt" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    // An idle prompt is excluded once, not twice.
+    try testWriteCommand(&s, "$ ", "cmd1", "out1\n");
+    try testWriteIdlePrompt(&s, "$ ", "");
+
+    const str = (try testSelectCommandsString(
+        &s,
+        alloc,
+        1,
+        .{ .exclude_active = true },
+    )).?;
+    defer alloc.free(str);
+    try testing.expectEqualStrings("$ cmd1\nout1", str);
+}
+
+test "Screen: selectCommands exclude_active leaves nothing" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 30, .rows = 15, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+
+    try s.testWriteString("motd\n");
+    try testWriteCommand(&s, "$ ", "ghostty-ai 1 why", "");
+    try testing.expect(s.selectCommands(1, .{ .exclude_active = true }) == null);
+}
+
+test "Screen: selectCommands spans scrollback" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 20, .rows = 3, .max_scrollback_bytes = null });
+    defer s.deinit();
+
+    // Most of this is scrolled off the active area.
+    try testWriteCommand(&s, "$ ", "cmd1", "out1a\nout1b\nout1c\nout1d\n");
+    try testWriteIdlePrompt(&s, "$ ", "");
+
+    const str = (try testSelectCommandsString(&s, alloc, 1, .{})).?;
+    defer alloc.free(str);
+    try testing.expectEqualStrings("$ cmd1\nout1a\nout1b\nout1c\nout1d", str);
 }
 
 test "Screen: selectionString basic" {
