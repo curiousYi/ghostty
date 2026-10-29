@@ -311,11 +311,6 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
     var backend = opts.backend;
     backend.initTerminal(&term);
 
-    // TEMPORARY: validates a local build. Remove before committing.
-    try term.printString("Hello World");
-    term.carriageReturn();
-    try term.linefeed();
-
     // Create our stream handler. This points to memory in self so it
     // isn't safe to use until self.* is set.
     const handler: StreamHandler = .{
