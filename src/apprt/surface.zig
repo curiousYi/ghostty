@@ -9,6 +9,7 @@ const renderer = @import("../renderer.zig");
 const terminal = @import("../terminal/main.zig");
 const Config = @import("../config.zig").Config;
 const MessageData = @import("../datastruct/main.zig").MessageData;
+const ghostty_ai = @import("../ghostty_ai.zig");
 
 /// The message types that can be sent to a single surface.
 pub const Message = union(enum) {
@@ -57,19 +58,46 @@ pub const Message = union(enum) {
         }
     };
 
-    /// A fixed-size ghostty-ai request (OSC 6767 `ai`) sent to the app
-    /// thread. The OSC parser has already validated it.
+    /// A ghostty-ai request (OSC 6767 `ai`) sent to the app thread. The
+    /// OSC parser has already validated it, and the IO thread has already
+    /// captured the commands, because by the time the app thread sees the
+    /// request the shell has usually moved on to its next prompt.
     pub const GhosttyAiRequest = struct {
+        alloc: Allocator,
+
         /// How many commands to capture, 1-99.
         count: u8,
 
         /// The decoded note: UTF-8, NUL-terminated, may be empty.
         note: [255:0]u8,
 
-        pub fn init(count: u8, note: []const u8) GhosttyAiRequest {
-            var result: GhosttyAiRequest = .{ .count = count, .note = undefined };
+        /// The captured commands, owned by this request.
+        capture: ghostty_ai.Capture,
+
+        /// Create a request. This takes ownership of `capture`, which must
+        /// be allocated with `alloc`, even on error.
+        pub fn create(
+            alloc: Allocator,
+            count: u8,
+            note: []const u8,
+            capture: ghostty_ai.Capture,
+        ) Allocator.Error!*GhosttyAiRequest {
+            errdefer capture.deinit(alloc);
+            const result = try alloc.create(GhosttyAiRequest);
+            result.* = .{
+                .alloc = alloc,
+                .count = count,
+                .note = undefined,
+                .capture = capture,
+            };
             DesktopNotification.copyUtf8Z(result.note.len, &result.note, note);
             return result;
+        }
+
+        pub fn destroy(self: *GhosttyAiRequest) void {
+            const alloc = self.alloc;
+            self.capture.deinit(alloc);
+            alloc.destroy(self);
         }
     };
 
@@ -126,8 +154,9 @@ pub const Message = union(enum) {
     desktop_notification: DesktopNotification,
 
     /// A program asked Ghostty to hand recent commands to the configured
-    /// LLM tool (OSC 6767 `ai`).
-    ghostty_ai_request: GhosttyAiRequest,
+    /// LLM tool (OSC 6767 `ai`). The receiver takes ownership of the
+    /// request and must destroy it.
+    ghostty_ai_request: *GhosttyAiRequest,
 
     /// Health status change for the renderer.
     renderer_health: renderer.Health,
@@ -275,16 +304,28 @@ test "DesktopNotification init" {
     try std.testing.expectEqualStrings("Body", std.mem.sliceTo(&notification.body, 0));
 }
 
-test "GhosttyAiRequest init" {
-    const req = Message.GhosttyAiRequest.init(7, "why?");
+test "GhosttyAiRequest create" {
+    const alloc = std.testing.allocator;
+    const GhosttyAiRequest = Message.GhosttyAiRequest;
+
+    const req = try GhosttyAiRequest.create(
+        alloc,
+        7,
+        "why?",
+        .{ .text = try alloc.dupe(u8, "history") },
+    );
+    defer req.destroy();
     try std.testing.expectEqual(@as(u8, 7), req.count);
     try std.testing.expectEqualStrings("why?", std.mem.sliceTo(&req.note, 0));
+    try std.testing.expectEqualStrings("history", req.capture.text);
 
-    const empty = Message.GhosttyAiRequest.init(1, "");
+    const empty = try GhosttyAiRequest.create(alloc, 1, "", .no_commands);
+    defer empty.destroy();
     try std.testing.expectEqualStrings("", std.mem.sliceTo(&empty.note, 0));
 
     const full: [255]u8 = @splat('a');
-    const max = Message.GhosttyAiRequest.init(99, &full);
+    const max = try GhosttyAiRequest.create(alloc, 99, &full, .alternate_screen);
+    defer max.destroy();
     try std.testing.expectEqualStrings(&full, std.mem.sliceTo(&max.note, 0));
 }
 
