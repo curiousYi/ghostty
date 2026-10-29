@@ -137,6 +137,7 @@ pub const Action = union(Key) {
     request_xt_checksum: xt_checksum.Request,
     xt_checksum_extension: XtChecksumExtension,
     program_status: ProgramStatus,
+    ghostty_ai_request: GhosttyAiRequest,
     soft_reset,
     back_index,
     forward_index,
@@ -249,6 +250,7 @@ pub const Action = union(Key) {
             "request_xt_checksum",
             "xt_checksum_extension",
             "program_status",
+            "ghostty_ai_request",
             "soft_reset",
             "back_index",
             "forward_index",
@@ -516,6 +518,10 @@ pub const Action = union(Key) {
     pub const KittyDnd = osc.Command.KittyDndProtocol;
 
     pub const ProgramStatus = osc.Command.ProgramStatus;
+
+    /// A Ghostty-private `ai` request (OSC 6767), already validated by
+    /// the OSC parser. The note is only valid for the handler call.
+    pub const GhosttyAiRequest = osc.Command.GhosttyAi;
 };
 
 /// Returns a type that can process a stream of tty control characters.
@@ -2999,6 +3005,10 @@ pub fn Stream(comptime H: type) type {
                     self.handler.vt(.program_status, v);
                 },
 
+                .ghostty_ai => |v| {
+                    self.handler.vt(.ghostty_ai_request, v);
+                },
+
                 .unknown => |v| {
                     @branchHint(.unlikely);
                     self.handler.vt(.osc_unknown, v);
@@ -4653,6 +4663,54 @@ test "stream: osc 52 large payload in chunks" {
         input.items[prefix.len .. prefix.len + payload_len],
         s.handler.data.items,
     );
+}
+
+test "stream: osc 6767 ghostty ai request" {
+    const alloc = testing.allocator;
+
+    const H = struct {
+        const Self = @This();
+        count: u8 = 0,
+        note: [64]u8 = undefined,
+        note_len: usize = 0,
+        calls: usize = 0,
+
+        pub fn vt(
+            self: *Self,
+            comptime action: Action.Tag,
+            value: Action.Value(action),
+        ) void {
+            switch (action) {
+                .ghostty_ai_request => {
+                    self.calls += 1;
+                    self.count = value.count;
+                    @memcpy(self.note[0..value.note.len], value.note);
+                    self.note_len = value.note.len;
+                },
+                else => {},
+            }
+        }
+    };
+
+    var s: Stream(H) = .init(.{ .handler = .{}, .allocator = alloc });
+    defer s.parser.deinit();
+
+    // ST terminator, "hi"
+    s.nextSlice("\x1b]6767;ai;count=5;note=aGk=\x1b\\");
+    try testing.expectEqual(@as(usize, 1), s.handler.calls);
+    try testing.expectEqual(@as(u8, 5), s.handler.count);
+    try testing.expectEqualStrings("hi", s.handler.note[0..s.handler.note_len]);
+
+    // BEL terminator, no note
+    s.nextSlice("\x1b]6767;ai;count=12\x07");
+    try testing.expectEqual(@as(usize, 2), s.handler.calls);
+    try testing.expectEqual(@as(u8, 12), s.handler.count);
+    try testing.expectEqual(@as(usize, 0), s.handler.note_len);
+
+    // Invalid requests never reach the handler.
+    s.nextSlice("\x1b]6767;ai;count=0\x1b\\");
+    s.nextSlice("\x1b]6767;nope;count=1\x1b\\");
+    try testing.expectEqual(@as(usize, 2), s.handler.calls);
 }
 
 test "stream: osc bulk path matches per-byte path" {

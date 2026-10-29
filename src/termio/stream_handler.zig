@@ -348,6 +348,7 @@ pub const StreamHandler = struct {
             .window_title => try self.windowTitle(value.title),
             .report_pwd => try self.reportPwd(value.url),
             .show_desktop_notification => try self.showDesktopNotification(value.title, value.body),
+            .ghostty_ai_request => self.ghosttyAiRequest(value),
             .progress_report => self.progressReport(value),
             .start_hyperlink => try self.startHyperlink(value.uri, value.id),
             .clipboard_contents => try self.clipboardContents(value.kind, value.data),
@@ -1841,6 +1842,15 @@ pub const StreamHandler = struct {
     ) !void {
         self.surfaceMessageWriter(.{
             .desktop_notification = .init(title, body),
+        });
+    }
+
+    fn ghosttyAiRequest(
+        self: *StreamHandler,
+        req: terminal.StreamAction.GhosttyAiRequest,
+    ) void {
+        self.surfaceMessageWriter(.{
+            .ghostty_ai_request = .init(req.count, req.note),
         });
     }
 

@@ -815,6 +815,10 @@ pub const Handler = struct {
             .title_push,
             .title_pop,
             => {},
+
+            // Unimplemented in libghostty-vt. The ghostty-ai request is
+            // handled by the Ghostty app (see termio/stream_handler.zig).
+            .ghostty_ai_request => log.debug("unimplemented OSC callback: ghostty_ai_request", .{}),
         }
     }
 
