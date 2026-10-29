@@ -12,6 +12,7 @@ const renderer = @import("../renderer.zig");
 const termio = @import("../termio.zig");
 const terminal = @import("../terminal/main.zig");
 const terminfo = @import("../terminfo/main.zig");
+const ghostty_ai = @import("../ghostty_ai.zig");
 const posix = std.posix;
 
 const log = std.log.scoped(.io_handler);
@@ -54,6 +55,9 @@ pub const StreamHandler = struct {
     /// Maximum total decoded bytes per Kitty clipboard protocol
     /// (OSC 5522) write transaction; exceeding it aborts with EFBIG.
     clipboard_write_limit: usize,
+
+    /// Whether programs may send ghostty-ai requests (OSC 6767).
+    ghostty_ai_access: configpkg.Config.GhosttyAiAccess,
 
     /// Whether DECRQCRA may report the checksum of an area of the screen,
     /// and XTCHECKSUM may change how it's calculated.
@@ -123,6 +127,7 @@ pub const StreamHandler = struct {
         self.osc_color_report_format = config.osc_color_report_format;
         self.clipboard_write = config.clipboard_write;
         self.clipboard_write_limit = config.clipboard_write_limit;
+        self.ghostty_ai_access = config.ghostty_ai_access;
         self.enquiry_response = config.enquiry_response;
         self.xt_checksum_report = config.xt_checksum_report;
         self.terminal.setDefaultCursorStyle(config.cursor_style);
@@ -1849,9 +1854,41 @@ pub const StreamHandler = struct {
         self: *StreamHandler,
         req: terminal.StreamAction.GhosttyAiRequest,
     ) void {
-        self.surfaceMessageWriter(.{
-            .ghostty_ai_request = .init(req.count, req.note),
-        });
+        if (self.ghostty_ai_access == .deny) {
+            log.info("ghostty-ai request refused, 'ghostty-ai-access' is set to deny", .{});
+            return;
+        }
+
+        // Check and capture now, while the terminal still shows the
+        // ghostty-ai command as the active one. A request that fails the
+        // check is most likely spoofed output, so it's only logged.
+        const plausible = ghostty_ai.isPlausible(self.alloc, self.terminal) catch |err| {
+            log.warn("error checking ghostty-ai request err={}", .{err});
+            return;
+        };
+        if (!plausible) {
+            log.warn("ghostty-ai request dropped, the active command is not ghostty-ai", .{});
+            return;
+        }
+
+        const capture = ghostty_ai.capture(
+            self.alloc,
+            self.terminal,
+            req.count,
+        ) catch |err| {
+            log.warn("error capturing ghostty-ai commands err={}", .{err});
+            return;
+        };
+        const msg = apprt.surface.Message.GhosttyAiRequest.create(
+            self.alloc,
+            req.count,
+            req.note,
+            capture,
+        ) catch |err| {
+            log.warn("error creating ghostty-ai request err={}", .{err});
+            return;
+        };
+        self.surfaceMessageWriter(.{ .ghostty_ai_request = msg });
     }
 
     /// Send a report to the pty.

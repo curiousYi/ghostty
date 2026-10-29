@@ -2526,9 +2526,15 @@ keybind: Keybinds = .{},
 /// a private temporary file (mode 0600). Ghostty then opens a split to the
 /// right of the current one, runs this command in it, and titles the split
 /// `ghostty-ai: N commands — <note>`. The capture file is deleted when the
-/// split closes. Only one `ghostty-ai` split per terminal can be open at a
-/// time. Ghostty only moves text: it never talks to an LLM provider or holds
-/// an API key. The configured tool does that.
+/// split closes, or when the terminal that opened it closes. Only one
+/// `ghostty-ai` split per terminal can be open at a time. Ghostty only moves
+/// text: it never talks to an LLM provider or holds an API key. The
+/// configured tool does that.
+///
+/// The function is defined by the `ghostty-ai` feature of
+/// `shell-integration-features`, which is on by default. If a request is
+/// refused (for example, a split is already open or this option is empty),
+/// Ghostty shows a desktop notification saying why.
 ///
 /// The command is run with `/bin/sh -c` and receives these environment
 /// variables:
@@ -3069,6 +3075,10 @@ keybind: Keybinds = .{},
 ///     command is available in the shell even if shell init scripts reset PATH.
 ///     This is particularly useful on macOS where PATH is often overridden by
 ///     system scripts. The directory is only added if not already present.
+///
+///   * `ghostty-ai` - Define the `ghostty-ai` shell function, which sends
+///     recent commands to `ghostty-ai-command`. Supported in bash, zsh and
+///     fish. See `ghostty-ai-command` and `ghostty-ai-access`.
 ///
 /// SSH features work independently and can be combined for optimal experience:
 /// when both `ssh-env` and `ssh-terminfo` are enabled, Ghostty will install its
@@ -9005,6 +9015,7 @@ pub const ShellIntegrationFeatures = packed struct {
     @"ssh-env": bool = false,
     @"ssh-terminfo": bool = false,
     path: bool = true,
+    @"ghostty-ai": bool = true,
 };
 
 /// See vt-xt-checksum-extension
