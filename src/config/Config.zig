@@ -2512,6 +2512,99 @@ keybind: Keybinds = .{},
 /// Available since: 1.0.1
 @"title-report": bool = false,
 
+/// The command that `ghostty-ai` runs to explain your recent terminal
+/// history with an LLM tool.
+///
+/// With shell integration enabled, the shell provides a `ghostty-ai`
+/// function:
+///
+///     ghostty-ai [count] [note]
+///
+/// For example, `ghostty-ai 10 "why is this failing?"`. `count` is the
+/// number of recent commands to capture, from 1 to 99, and defaults to 5.
+/// The function asks Ghostty to write those commands and their output to
+/// a private temporary file (mode 0600). Ghostty then opens a split to the
+/// right of the current one, runs this command in it, and titles the split
+/// `ghostty-ai: N commands — <note>`. The capture file is deleted when the
+/// split closes. Only one `ghostty-ai` split per terminal can be open at a
+/// time. Ghostty only moves text: it never talks to an LLM provider or holds
+/// an API key. The configured tool does that.
+///
+/// The command is run with `/bin/sh -c` and receives these environment
+/// variables:
+///
+///   * `GHOSTTY_AI_FILE` - The absolute path of the capture file.
+///
+///   * `GHOSTTY_AI_NOTE` - The note given to `ghostty-ai`, possibly empty.
+///
+/// The note is passed only as an environment variable and is never spliced
+/// into the command string, so it stays inert text. Refer to it as
+/// `"$GHOSTTY_AI_NOTE"` (quoted) in the command.
+///
+/// The default is:
+///
+///     claude --tools "" --append-system-prompt "$(cat "$GHOSTTY_AI_FILE")" "$GHOSTTY_AI_NOTE"
+///
+/// This runs Claude Code with the capture as extra system prompt and the
+/// note as the first message. `--tools ""` disables every Claude tool, so
+/// the default can only give text advice: it cannot run commands, read
+/// other files, or edit anything. If you point this at an agent that can
+/// run commands or has other tool permissions, you accept more risk,
+/// because the captured history can contain text written by any program
+/// you ran (see `ghostty-ai-access`).
+///
+/// Known limitation: the default passes the whole capture as a single
+/// argument. Linux limits a single argument to about 128 KB
+/// (`MAX_ARG_STRLEN`), so a very large capture can make the command fail
+/// to start. Capture fewer commands, or use a tool that reads the file at
+/// `$GHOSTTY_AI_FILE` itself.
+///
+/// Like `command`, this can be prefixed with `direct:` or `shell:`. A
+/// `direct:` command is not shell-expanded, so `$GHOSTTY_AI_*` references
+/// in it are not expanded either.
+@"ghostty-ai-command": ?Command = .{
+    .shell = "claude --tools \"\" --append-system-prompt \"$(cat \"$GHOSTTY_AI_FILE\")\" \"$GHOSTTY_AI_NOTE\"",
+},
+
+/// Whether programs running in the terminal may start `ghostty-ai`
+/// (see `ghostty-ai-command`).
+///
+/// The `ghostty-ai` shell function works by emitting an escape sequence
+/// that asks Ghostty to capture recent history and open the split. Any
+/// program's output can contain that same sequence, for example
+/// `cat`-ing an untrusted file, `curl` output, or a process on a remote
+/// SSH host. Ghostty applies these guards to every request:
+///
+///   * The command at the active prompt must be `ghostty-ai` itself, as
+///     recorded by shell integration. Requests that fail this check are
+///     dropped and only logged.
+///
+///   * Only one `ghostty-ai` split per terminal can be open at a time.
+///
+///   * The split's title shows the request (`ghostty-ai: N commands —
+///     <note>`) and the program in the split cannot change it.
+///
+/// A spoofed request cannot choose where the history goes: it is always
+/// sent to `ghostty-ai-command`. With the text-only default, the worst case
+/// is your own history going to your own provider, plus misleading advice.
+///
+/// Valid values are:
+///
+///   * `allow` - Allow requests that pass the guards above (the default).
+///
+///   * `deny` - Refuse every request from a program in the terminal.
+///
+/// This only gates the escape-sequence request. It never affects the
+/// `write_command_file` keybind action, which you trigger yourself.
+///
+/// A third value, `ask`, which would show a confirmation dialog like
+/// `clipboard-read = ask`, is planned future work and is the probable
+/// default if this feature goes upstream. There is precedent for being
+/// cautious with this class of risk: `title-report` is disabled by default
+/// because an escape sequence that any program can emit is enough to abuse
+/// it.
+@"ghostty-ai-access": GhosttyAiAccess = .allow,
+
 /// The total amount of bytes that can be used for image data (e.g. the Kitty
 /// image protocol) per terminal screen. The maximum value is 4,294,967,295
 /// (4GiB). The default is 320MB. If this is set to zero, then all image
@@ -9500,6 +9593,12 @@ pub const ClipboardAccess = enum {
     ask,
 };
 
+/// See ghostty-ai-access
+pub const GhosttyAiAccess = enum {
+    allow,
+    deny,
+};
+
 /// See window-save-state
 pub const WindowSaveState = enum {
     default,
@@ -10867,6 +10966,40 @@ test "working-directory expands tilde" {
         &buf,
     ) catch "~/projects/ghostty";
     try testing.expectEqualStrings(expected, cfg.@"working-directory".?.value().?);
+}
+
+test "ghostty-ai default and parse" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    {
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        try testing.expectEqual(GhosttyAiAccess.allow, cfg.@"ghostty-ai-access");
+        const cmd = cfg.@"ghostty-ai-command".?;
+        try testing.expect(cmd == .shell);
+        try testing.expectEqualStrings(
+            "claude --tools \"\" --append-system-prompt \"$(cat \"$GHOSTTY_AI_FILE\")\" \"$GHOSTTY_AI_NOTE\"",
+            cmd.shell,
+        );
+    }
+
+    {
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        var it: TestIterator = .{ .data = &.{
+            "--ghostty-ai-access=deny",
+            "--ghostty-ai-command=direct:llm --file x",
+        } };
+        try cfg.loadIter(alloc, &it);
+        try cfg.finalize();
+
+        try testing.expectEqual(GhosttyAiAccess.deny, cfg.@"ghostty-ai-access");
+        const cmd = cfg.@"ghostty-ai-command".?;
+        try testing.expect(cmd == .direct);
+        try testing.expectEqual(@as(usize, 3), cmd.direct.len);
+        try testing.expectEqualStrings("llm", cmd.direct[0]);
+    }
 }
 
 test "changed" {
