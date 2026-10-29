@@ -216,38 +216,94 @@ A filter that matches nothing still runs 77 baseline tests.
 - Verified: the targeted test filters pass, `zig build` (including the
   macOS app) succeeds. Not yet verified end to end in the app.
 
-## Environment (blocks the app build and the demo)
+## Manual testing: issues reported (2026-10-29)
 
-- **Xcode is not active.** `xcode-select -p` shows
-  `/Library/Developer/CommandLineTools`, and Xcode.app is installed but has
-  never been set up. `DEVELOPER_DIR` pointed at Xcode.app fails with
-  `XcodeMacOSSDKNotFound`. The user will run:
+The user tested the debug macOS build (`zig-out/Ghostty.app`, built from
+`e244b443a`'s tree) against the `~/code/acme-api` fixture, without following
+the demo script exactly. **The end-to-end flow works:** `ghostty-ai` opened
+a split running `claude`, which named the `@acme/session-client` 1.4.2 →
+2.0.0 bump as the likely cause. The issues below were recorded and are not
+addressed yet.
+
+1. **zsh globbing breaks unquoted notes.** `ghostty-ai 5 "why is the above
+   failing"?` fails with `zsh: no matches found` before the function runs,
+   because the `?` outside the quotes is a glob. Nothing reaches Ghostty.
+   Possible fix: `alias ghostty-ai='noglob ghostty-ai'` in the zsh
+   integration.
+
+2. **Output a command shows on the alternate screen is not captured.**
+   `git log -1 --oneline` printed nothing on the primary screen: the pager
+   (`less` without `-X`) drew it on the alternate screen, which was cleared
+   on exit. The capture therefore has the command but not its output. This
+   is how terminals work, not a ghostty-ai bug, but it can hide useful
+   context. For the demo, use `git --no-pager log -1 --oneline`.
+
+3. **"Already open" refusal right after closing the split.** After closing
+   the AI split, two `ghostty-ai` requests (10:47:04, 10:47:13) were refused
+   with `a ghostty-ai split from this terminal is already open`. The split's
+   surface was only destroyed at 10:47:17. On macOS a closed split stays
+   alive for `undo-timeout` (5 s by default) so ⌘Z can restore it, and the
+   flag is cleared on surface deinit. Options: mention undo in the refusal
+   text and docs, or clear the flag when the split closes (but then a
+   restored split's capture file is already gone).
+
+4. **Refusals are invisible when notifications are blocked.** The refusals
+   above showed nothing on screen. The log has `Notifications are not
+   allowed for this application`: the debug bundle
+   (`com.mitchellh.ghostty.debug`) has its own notification permission,
+   which was off. With notifications off, the only trace of a refusal is a
+   log line. The plan rules out writing to the pty, so alternatives would be
+   a bell or an in-app message.
+
+5. **The default `claude --tools ""` still tries to call tools.** With every
+   tool disabled, Claude printed raw `<invoke name="Read">` / `<invoke
+   name="Bash">` markup as text, then said "every tool call I made ... came
+   back with no output" and asked the user to run commands. The diagnosis
+   was still right, but the output is noisy and misleading. Claude Code's
+   own system prompt still describes tools, and `--append-system-prompt`
+   only adds to it. Options: tell the model in the appended prompt that it
+   has no tools and must answer from the capture, try `--system-prompt`, or
+   use print mode (`-p`).
+
+6. **Garbled text in Claude's answer.** Parts of the reply were cut or
+   merged ("Both failures throw at the sam", "update src/n the commands
+   above, orlet me know"). Cause unknown: it may be how the TUI text was
+   copied rather than the output itself. Needs a second look.
+
+7. **Failed attempts end up in later captures.** The capture included the
+   earlier failed `ghostty-ai ... ?` line and its zsh error, and Claude
+   commented on it. This is harmless and expected (it is a command in the
+   history), but earlier `ghostty-ai` lines could be skipped.
+
+## Environment (as of 2026-10-29, after Step 2)
+
+- **Xcode is active:** `xcode-select -p` shows
+  `/Applications/Xcode.app/Contents/Developer` (Xcode 26.3). The Metal
+  toolchain is available through `xcrun`.
+  - The full `zig build`, including the macOS app and the xcframework,
+    succeeds, so the Swift code in F now compiles for real.
+  - The app is at `zig-out/Ghostty.app` (bundle id
+    `com.mitchellh.ghostty.debug`). It is a separate app from
+    `/Applications/Ghostty.app`, with its own permissions, including
+    notifications.
+  - The placeholder Metal scripts (`…/scratchpad/fakebin`) from the earlier
+    session are no longer needed. Don't put them on `PATH`.
+- **Zig 0.17.0 is installed with Homebrew** (`/opt/homebrew/bin/zig`). The
+  scratch-directory Zig from the earlier session is no longer needed.
+- **Logs:** the debug app logs to the unified log. Use the full path, because
+  `log` is a zsh builtin:
   ```
-  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-  sudo xcodebuild -license accept
-  xcodebuild -runFirstLaunch
+  /usr/bin/log show --last 30m --info --predicate 'subsystem BEGINSWITH "com.mitchellh.ghostty"'
   ```
-  Until then:
-  - the Swift code in F has only been syntax-checked (`swiftc -parse`);
-  - the macOS app can't be built;
-  - `xcodebuild -create-xcframework` fails, so pass `-Demit-xcframework=false`.
-- **Zig is not installed system-wide.** The agents used an official Zig 0.17.0
-  (sha256 verified) from the session scratch directory:
-  `/private/tmp/claude-501/-Users-yichao-github-ghostty/a37383c5-613e-4b7b-8125-25b9e4d20543/scratchpad/zigdl/zig-aarch64-macos-0.17.0/zig`.
-  The user will decide how to install Zig.
-- **Placeholder Metal tools.** Without Xcode, `metal` and `metallib` are
-  missing. The test runs put placeholder scripts first on `PATH`
-  (`…/scratchpad/fakebin`); they write empty files. That is fine for unit
-  tests. **Never use it for a build you run or demo**, because the shaders
-  would be empty.
-- **GTK can't compile on this Mac** (no gtk and adwaita headers). F's GTK code
-  passed only `zig ast-check`.
-- Also not installed: `prettier`, `swiftlint`, `shellcheck`, `pandoc`, `llm`,
-  `ollama`.
+  The `ghostty-ai` refusals are logged at info level by the `surface` scope.
+- **GTK still can't compile on this Mac** (no gtk and adwaita headers). F's
+  GTK code has only passed `zig ast-check`.
+- **Still not installed:** `prettier`, `swiftlint`, `shellcheck`, `fish`,
+  `pandoc`, `llm`, `ollama`. The fish changes (including the Q25 gating) are
+  untested.
 
 ## Still open
 
-- Xcode setup and the Zig install (the user).
 - OSC 6767 was a best-effort pick, because no OSC registry exists.
 
 ## Process reminders
