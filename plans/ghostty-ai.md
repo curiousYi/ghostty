@@ -156,14 +156,25 @@ ESC ] 6767 ; ai ; count=<n> ; note=<base64> ST
 
 ### C0.4 Surface message (WS-C produces, Step 2 consumes)
 
-In `src/apprt/surface.zig`, modelled on `DesktopNotification`:
+**Changed in Step 2.** The original fixed-size `{ count, note }` message
+raced: the OSC is parsed on the IO thread, but the app thread handles the
+message later, by which time the shell has usually drawn its next prompt.
+The active command is then no longer `ghostty-ai`, so both the plausibility
+check and `exclude_active` would look at the wrong command.
+
+The IO thread (`termio/stream_handler.zig`) therefore checks
+`ghostty-ai-access` and plausibility, and captures the commands while it
+holds the terminal lock. It then sends an owned pointer, following the
+`kitty_clipboard_write` pattern:
 
 ```zig
-ghostty_ai_request: GhosttyAiRequest,
+ghostty_ai_request: *GhosttyAiRequest,   // receiver must destroy()
 
 pub const GhosttyAiRequest = struct {
-    count: u8,           // 1-99, already validated by the parser
-    note: [255:0]u8,     // UTF-8, NUL-terminated, may be empty
+    alloc: Allocator,
+    count: u8,                  // 1-99, already validated by the parser
+    note: [255:0]u8,            // UTF-8, NUL-terminated, may be empty
+    capture: ghostty_ai.Capture, // .text (header + plain text), .alternate_screen, .no_commands
 };
 ```
 
