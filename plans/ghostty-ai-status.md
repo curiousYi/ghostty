@@ -9,8 +9,8 @@ done, what is decided since the plan, and what is next.
 - Step 0 (contracts) and workstreams A–G are done.
 - A–F are merged into the local branch `ghostty-ai`. G (the demo fixture)
   lives outside the repo.
-- **Step 2 (integration) has not started.** Nothing works end to end yet. Two
-  stubs in `src/Surface.zig` stand where the integration code will go.
+- **Step 2 (integration) is done** (see "Step 2: integration (done)").
+  Step 3 (demo and report) is next.
 - Neither the macOS app nor GTK has been built. See "Environment".
 
 ## Branch `ghostty-ai`
@@ -188,37 +188,33 @@ A filter that matches nothing still runs 77 baseline tests.
 - **An empty or null `ghostty-ai-command`** is treated as a refusal: a desktop
   notification saying "ghostty-ai-command is not set", and no split.
 
-## Next: Step 2 integration (not started)
+## Step 2: integration (done)
 
-Follow "Step 2" in `plans/ghostty-ai.md`, plus:
-
-1. Replace both stubs: `grep -n "ghostty-ai: stub" src/Surface.zig`.
-2. The keybind goes through `WriteScreenLoc.command` and `writeScreenFile`.
-   Check for the alternate screen before calling `selectCommands`.
-3. For `ghostty_ai_request`, check in order:
-   1. access is `deny`;
-   2. the plausibility check (the input cells, via
-      `highlightSemanticContent(.input)`);
-   3. the note contains control bytes (Q27);
-   4. a split from this surface is already open;
-   5. the screen is the alternate screen, or there are no marks;
-   6. the command is null or empty.
-
-   Then:
-   - capture with `exclude_active = true`;
-   - write the header line;
-   - perform `new_split_command` to the right, with the `GHOSTTY_AI_*` env vars
-     and the truncated title.
-4. One-at-a-time tracking:
-   - The parent stores an id and passes it to the child as
-     `GHOSTTY_AI_PARENT`.
-   - When the child Surface deinits, it clears the parent's flag and deletes
-     the capture temp dir.
-5. Add the `ghostty-ai` feature flag (Q25) in `Config.zig` and in each shell.
-6. Tests: the plausibility check, the control-byte rejection, and the title
-   formatting.
-
-Then Step 3: the demo and the final report described in the plan.
+- **Contract change (C0.4).** The IO thread now checks `ghostty-ai-access`
+  and plausibility and captures the commands while it holds the terminal
+  lock, then sends an owned `*GhosttyAiRequest` with the capture. Doing this
+  on the app thread raced with the shell drawing its next prompt. See C0.4
+  in `plans/ghostty-ai.md`.
+- `src/ghostty_ai.zig` (new): `isPlausible`, `capture` (header + plain
+  text), `isValidNote` (Q27), `formatTitle`, `shellCommand` (`direct:`
+  arguments are single-quoted for `/bin/sh -c`), with tests.
+- `src/Surface.zig`:
+  - `write_command_file` goes through `writeScreenFile` with
+    `WriteScreenLoc.command`; it does nothing on the alternate screen.
+  - `ghosttyAiRequest` refuses with a desktop notification for: a note with
+    control bytes, a split already open, the alternate screen, no commands,
+    or an empty `ghostty-ai-command`. Otherwise it writes `commands.txt`
+    (0600) and performs `new_split_command` to the right.
+  - One split at a time: `ghostty_ai_split` holds the request id and the
+    temp dir. The child reads `GHOSTTY_AI_PARENT` from `config.env` and calls
+    `App.ghosttyAiSplitClosed` on deinit. If the parent closes first, it
+    deletes the temp dir itself.
+- Q25: `ghostty-ai` feature in `shell-integration-features` (default on);
+  the function is gated on it in zsh, bash and fish.
+- The header says "last N commands" with the requested N, even when fewer
+  were captured.
+- Verified: the targeted test filters pass, `zig build` (including the
+  macOS app) succeeds. Not yet verified end to end in the app.
 
 ## Environment (blocks the app build and the demo)
 

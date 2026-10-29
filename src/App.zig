@@ -73,6 +73,10 @@ config_conditional_state: configpkg.ConditionalState,
 /// if they are the first surface.
 first: bool = true,
 
+/// The id of the next ghostty-ai request. Ids tie a ghostty-ai split
+/// back to the surface that launched it.
+ghostty_ai_next_id: u64 = 1,
+
 pub const CreateError = Allocator.Error || font.SharedGridSet.InitError;
 
 /// Create a new app instance. This returns a stable pointer to the app
@@ -529,6 +533,14 @@ fn surfaceMessage(self: *App, surface: *Surface, msg: apprt.surface.Message) !vo
 
     // Window was not found, it probably quit before we handled the message.
     // Not a problem.
+}
+
+/// Called when the ghostty-ai split with the given request id closes,
+/// so the surface that launched it (if it is still open) can clean up.
+pub fn ghosttyAiSplitClosed(self: *App, id: u64) void {
+    for (self.surfaces.items) |rt_surface| {
+        rt_surface.core().ghosttyAiSplitClosed(id);
+    }
 }
 
 fn hasSurface(self: *const App, surface: *const Surface) bool {
