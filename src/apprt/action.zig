@@ -364,6 +364,12 @@ pub const Action = union(Key) {
     /// split or the window is fullscreen.
     resize_window: ResizeWindow,
 
+    /// Create a new split that runs a specific command with extra
+    /// environment variables and a fixed title. Internal only: this is not
+    /// a keybind action. It is separate from `new_split` so that the C ABI
+    /// of `new_split` (a bare direction) doesn't change for embedders.
+    new_split_command: NewSplitCommand,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -436,6 +442,7 @@ pub const Action = union(Key) {
         copy_title_to_clipboard,
         move_tab_to_new_window,
         resize_window,
+        new_split_command,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -494,8 +501,13 @@ pub const Action = union(Key) {
     }
 
     /// Convert to ghostty_action_s.
+    ///
+    /// This can't convert `new_split_command`, because its C value points
+    /// at storage that must outlive this call. Use
+    /// `NewSplitCommand.CStorage` for that action instead.
     pub fn cval(self: Action) C {
         const value: CValue = switch (self) {
+            .new_split_command => unreachable,
             inline else => |v, tag| @unionInit(
                 CValue,
                 @tagName(tag),
@@ -520,6 +532,140 @@ pub const SplitDirection = enum(c_int) {
 
     test "ghostty.h SplitDirection" {
         try lib.checkGhosttyHEnum(SplitDirection, "GHOSTTY_SPLIT_DIRECTION_");
+    }
+};
+
+/// An environment variable to set for a new surface.
+pub const EnvVar = struct {
+    key: [:0]const u8,
+    value: [:0]const u8,
+
+    // Sync with: ghostty_env_var_s
+    pub const C = extern struct {
+        key: [*:0]const u8,
+        value: [*:0]const u8,
+    };
+
+    pub fn cval(self: EnvVar) C {
+        return .{
+            .key = self.key.ptr,
+            .value = self.value.ptr,
+        };
+    }
+};
+
+/// The payload for `new_split_command`.
+///
+/// The C value only holds the direction and a pointer to `Details`,
+/// because the strings don't fit in the 24 byte C action union. Every
+/// pointer is valid only for the duration of the performAction call, so
+/// apprts must copy whatever they keep.
+pub const NewSplitCommand = struct {
+    direction: SplitDirection,
+
+    /// The command to run. Run via `/bin/sh -c`.
+    command: [:0]const u8,
+
+    /// Extra environment variables for the command.
+    env: []const EnvVar,
+
+    /// The title of the new split. This becomes the user title override,
+    /// so the child can't replace it.
+    title: [:0]const u8,
+
+    // Sync with: ghostty_action_new_split_command_s
+    pub const C = extern struct {
+        direction: SplitDirection,
+        details: *const Details,
+    };
+
+    // Sync with: ghostty_action_new_split_command_details_s
+    pub const Details = extern struct {
+        command: [*:0]const u8,
+        env_vars: [*]const EnvVar.C,
+        env_var_count: usize,
+        title: [*:0]const u8,
+    };
+
+    /// The memory that `C` points to. `cval` returns by value, so it
+    /// can't own this; the caller keeps a `CStorage` alive (usually on
+    /// its stack) for as long as the C value is in use.
+    pub const CStorage = struct {
+        details: Details,
+        env_vars: []EnvVar.C,
+
+        pub fn init(
+            alloc: std.mem.Allocator,
+            value: NewSplitCommand,
+        ) std.mem.Allocator.Error!CStorage {
+            const env_vars = try alloc.alloc(EnvVar.C, value.env.len);
+            for (env_vars, value.env) |*dst, src| dst.* = src.cval();
+            return .{
+                .details = .{
+                    .command = value.command.ptr,
+                    .env_vars = env_vars.ptr,
+                    .env_var_count = env_vars.len,
+                    .title = value.title.ptr,
+                },
+                .env_vars = env_vars,
+            };
+        }
+
+        pub fn deinit(self: *CStorage, alloc: std.mem.Allocator) void {
+            alloc.free(self.env_vars);
+            self.* = undefined;
+        }
+
+        /// The C value. Valid until `deinit` and only while `self`
+        /// doesn't move.
+        pub fn cval(self: *const CStorage, direction: SplitDirection) C {
+            return .{
+                .direction = direction,
+                .details = &self.details,
+            };
+        }
+    };
+
+    pub fn format(
+        value: @This(),
+        comptime _: []const u8,
+        _: std.fmt.Options,
+        writer: *std.Io.Writer,
+    ) !void {
+        try writer.print("{s}{{ direction: {t}, command: {s}, env: {d} vars, title: {s} }}", .{
+            @typeName(@This()),
+            value.direction,
+            value.command,
+            value.env.len,
+            value.title,
+        });
+    }
+
+    test "NewSplitCommand C storage" {
+        const testing = std.testing;
+        const alloc = testing.allocator;
+
+        const env = [_]EnvVar{
+            .{ .key = "A", .value = "1" },
+            .{ .key = "B", .value = "2" },
+        };
+        const value: NewSplitCommand = .{
+            .direction = .right,
+            .command = "echo hi",
+            .env = &env,
+            .title = "title",
+        };
+
+        var storage: CStorage = try .init(alloc, value);
+        defer storage.deinit(alloc);
+
+        const c = storage.cval(value.direction);
+        try testing.expectEqual(SplitDirection.right, c.direction);
+        try testing.expectEqualStrings("echo hi", std.mem.sliceTo(c.details.command, 0));
+        try testing.expectEqualStrings("title", std.mem.sliceTo(c.details.title, 0));
+        try testing.expectEqual(@as(usize, 2), c.details.env_var_count);
+        try testing.expectEqualStrings("B", std.mem.sliceTo(c.details.env_vars[1].key, 0));
+        try testing.expectEqualStrings("2", std.mem.sliceTo(c.details.env_vars[1].value, 0));
     }
 };
 

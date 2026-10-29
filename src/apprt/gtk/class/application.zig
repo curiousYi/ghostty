@@ -734,6 +734,7 @@ pub const Application = extern struct {
             .move_tab_to_new_window => return Action.moveTabToNewWindow(target),
 
             .new_split => return Action.newSplit(target, value),
+            .new_split_command => return Action.newSplitCommand(target, value),
 
             .new_tab => return Action.newTab(target, .none),
 
@@ -2517,6 +2518,54 @@ const Action = struct {
                     "&s",
                     @tagName(direction).ptr,
                 ) != 0;
+            },
+        }
+    }
+
+    pub fn newSplitCommand(
+        target: apprt.Target,
+        value: apprt.action.NewSplitCommand,
+    ) bool {
+        switch (target) {
+            .app => {
+                log.warn("new split command to app is unexpected", .{});
+                return false;
+            },
+
+            .surface => |core| {
+                const surface = core.rt_surface.surface;
+                const tree = ext.getAncestor(
+                    SplitTree,
+                    surface.as(gtk.Widget),
+                ) orelse {
+                    log.warn("surface is not in a split tree, ignoring new_split_command", .{});
+                    return false;
+                };
+
+                // Surface.new copies the overrides it keeps (command, env,
+                // title), so borrowing the action's memory here is fine.
+                tree.newSplit(
+                    switch (value.direction) {
+                        .right => .right,
+                        .down => .down,
+                        .left => .left,
+                        .up => .up,
+                    },
+                    surface,
+                    .{
+                        .command = .{ .shell = value.command },
+                        .shell_integration = null,
+                        .working_directory = null,
+                        .title = if (value.title.len > 0) value.title else null,
+                        .env = value.env,
+                        .wait_after_command = true,
+                    },
+                ) catch |err| {
+                    log.warn("new split command failed error={}", .{err});
+                    return false;
+                };
+
+                return true;
             },
         }
     }
