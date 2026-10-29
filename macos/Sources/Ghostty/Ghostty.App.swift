@@ -608,6 +608,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_NEW_SPLIT:
                 newSplit(app, target: target, direction: action.action.new_split)
 
+            case GHOSTTY_ACTION_NEW_SPLIT_COMMAND:
+                return newSplitCommand(app, target: target, v: action.action.new_split_command)
+
             case GHOSTTY_ACTION_CLOSE_TAB:
                 closeTab(app, target: target, mode: action.action.close_tab_mode)
 
@@ -1019,6 +1022,68 @@ extension Ghostty {
             default:
                 assertionFailure()
             }
+        }
+
+        private static func newSplitCommand(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_new_split_command_s
+        ) -> Bool {
+            guard target.tag == GHOSTTY_TARGET_SURFACE else {
+                Ghostty.logger.warning("new split command does nothing with an app target")
+                return false
+            }
+
+            guard let surface = target.target.surface else { return false }
+            guard let surfaceView = self.surfaceView(from: surface) else { return false }
+
+            let splitDirection: SplitTree<Ghostty.SurfaceView>.NewDirection
+            switch v.direction {
+            case GHOSTTY_SPLIT_DIRECTION_RIGHT: splitDirection = .right
+            case GHOSTTY_SPLIT_DIRECTION_LEFT: splitDirection = .left
+            case GHOSTTY_SPLIT_DIRECTION_DOWN: splitDirection = .down
+            case GHOSTTY_SPLIT_DIRECTION_UP: splitDirection = .up
+            default: return false
+            }
+
+            // Every pointer in the payload is only valid during this call,
+            // so copy everything into Swift values before going on.
+            let details = v.details.pointee
+            let command = String(cString: details.command)
+            let title = String(cString: details.title)
+            var environmentVariables: [String: String] = [:]
+            if details.env_var_count > 0, let envVars = details.env_vars {
+                for i in 0..<details.env_var_count {
+                    let envVar = envVars[i]
+                    environmentVariables[String(cString: envVar.key)] = String(cString: envVar.value)
+                }
+            }
+
+            // Inherit from the parent the same way a normal split does
+            // (working directory, font size), then set our command and env.
+            var config = SurfaceConfiguration(
+                from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_SPLIT))
+            config.command = command
+            config.environmentVariables.merge(environmentVariables) { _, new in new }
+
+            guard let controller = BaseTerminalController.controller(owning: surfaceView) else {
+                Ghostty.logger.warning("new split command target is not in a splittable window")
+                return false
+            }
+
+            guard let newView = controller.newSplit(
+                at: surfaceView,
+                direction: splitDirection,
+                baseConfig: config
+            ) else { return false }
+
+            // The title override keeps the child's own titles (OSC 0/2)
+            // from replacing ours.
+            if !title.isEmpty {
+                newView.titleOverride = title
+            }
+
+            return true
         }
 
         private static func presentTerminal(

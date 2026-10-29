@@ -192,6 +192,7 @@ pub const DerivedConfig = struct {
     osc_color_report_format: configpkg.Config.OSCColorReportFormat,
     clipboard_write: configpkg.ClipboardAccess,
     clipboard_write_limit: usize,
+    ghostty_ai_access: configpkg.Config.GhosttyAiAccess,
     enquiry_response: []const u8,
     xt_checksum_report: bool,
     xt_checksum_extension: terminalpkg.xt_checksum.Flags,
@@ -231,6 +232,7 @@ pub const DerivedConfig = struct {
             .osc_color_report_format = config.@"osc-color-report-format",
             .clipboard_write = config.@"clipboard-write",
             .clipboard_write_limit = config.@"clipboard-write-limit-bytes".value,
+            .ghostty_ai_access = config.@"ghostty-ai-access",
             .enquiry_response = try alloc.dupe(u8, config.@"enquiry-response"),
             .xt_checksum_report = config.@"vt-xt-checksum-report",
             .xt_checksum_extension = xtChecksumFlags(config.@"vt-xt-checksum-extension"),
@@ -323,6 +325,7 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         .osc_color_report_format = opts.config.osc_color_report_format,
         .clipboard_write = opts.config.clipboard_write,
         .clipboard_write_limit = opts.config.clipboard_write_limit,
+        .ghostty_ai_access = opts.config.ghostty_ai_access,
         .enquiry_response = opts.config.enquiry_response,
         .xt_checksum_report = opts.config.xt_checksum_report,
     };

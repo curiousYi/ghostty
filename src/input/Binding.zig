@@ -550,6 +550,32 @@ pub const Action = union(enum) {
     /// Does nothing when no text is selected.
     write_selection_file: WriteScreen,
 
+    /// Write the last `count` commands into a temporary file with the
+    /// specified action. Each command includes its prompt, its command
+    /// line, and its full output.
+    ///
+    /// The format is `write_command_file:<action>[,<format>][,<count>]`.
+    /// See `write_scrollback_file` for possible actions. The format is
+    /// one of `plain`, `vt`, or `html` and defaults to `plain`. The count
+    /// is a positive integer and defaults to `1`. The format and count are
+    /// recognized by their type, so `write_command_file:copy,5` and
+    /// `write_command_file:copy,html,5` are both valid. Each may be given
+    /// at most once.
+    ///
+    /// Requires shell integration. Commands are found using the prompt
+    /// marks that shell integration emits. The current prompt is not
+    /// counted if no command has been run at it yet, but a command that
+    /// is still running counts as the most recent command and its output
+    /// so far is included. If fewer than `count` commands exist, all of
+    /// them are written.
+    ///
+    /// The temporary file is only readable and writable by the current
+    /// user (mode `0600`).
+    ///
+    /// Does nothing when there are no shell integration prompt marks or
+    /// when the alternate screen is active.
+    write_command_file: WriteCommand,
+
     /// Open a new window.
     ///
     /// If the application isn't currently focused,
@@ -1190,6 +1216,66 @@ pub const Action = union(enum) {
         }
     };
 
+    pub const WriteCommand = struct {
+        action: WriteScreen.Action,
+        emit: WriteScreen.Format = .plain,
+        count: u16 = 1,
+
+        /// Parse `<action>[,<format>][,<count>]`. Each argument after the
+        /// action is classified by its type: a format name sets `emit` and
+        /// a decimal integer sets `count`. The format and count may appear
+        /// in either order, but each at most once. A count of zero, a
+        /// count that doesn't fit in a u16, an empty argument, or any
+        /// other argument is an error.
+        pub fn parse(param: []const u8) !WriteCommand {
+            var it = std.mem.splitScalar(u8, param, ',');
+            var result: WriteCommand = .{
+                .action = try Binding.Action.parseEnum(
+                    WriteScreen.Action,
+                    it.first(),
+                ),
+            };
+
+            var seen_emit = false;
+            var seen_count = false;
+            while (it.next()) |arg| {
+                if (std.meta.stringToEnum(WriteScreen.Format, arg)) |emit| {
+                    if (seen_emit) return Error.InvalidFormat;
+                    seen_emit = true;
+                    result.emit = emit;
+                    continue;
+                }
+
+                // Only plain decimal digits are allowed. std.fmt.parseInt
+                // would also accept signs and underscores.
+                if (arg.len == 0) return Error.InvalidFormat;
+                for (arg) |c| if (!std.ascii.isDigit(c)) return Error.InvalidFormat;
+                if (seen_count) return Error.InvalidFormat;
+                seen_count = true;
+                result.count = try Binding.Action.parseInt(u16, arg);
+                if (result.count == 0) return Error.InvalidFormat;
+            }
+
+            return result;
+        }
+
+        pub fn clone(
+            self: WriteCommand,
+            alloc: Allocator,
+        ) Allocator.Error!WriteCommand {
+            _ = alloc;
+            return self;
+        }
+
+        pub fn format(self: WriteCommand, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+            try writer.print("{t},{t},{d}", .{
+                self.action,
+                self.emit,
+                self.count,
+            });
+        }
+    };
+
     // Extern because it is used in the embedded runtime ABI.
     pub const InspectorMode = enum {
         toggle,
@@ -1418,6 +1504,7 @@ pub const Action = union(enum) {
             .write_scrollback_file,
             .write_screen_file,
             .write_selection_file,
+            .write_command_file,
             .close_surface,
             .close_tab,
             .close_window,
@@ -4640,6 +4727,156 @@ test "parse: write screen file invalid" {
     try testing.expectError(Error.InvalidFormat, parseSingle(
         "a=write_screen_file:copy,html,extra",
     ));
+}
+
+test "parse: write_command_file accepted forms" {
+    const testing = std.testing;
+
+    const cases = [_]struct { []const u8, Action.WriteCommand }{
+        // Defaults
+        .{ "copy", .{ .action = .copy, .emit = .plain, .count = 1 } },
+        .{ "paste", .{ .action = .paste, .emit = .plain, .count = 1 } },
+        .{ "open", .{ .action = .open, .emit = .plain, .count = 1 } },
+
+        // Format only
+        .{ "copy,html", .{ .action = .copy, .emit = .html, .count = 1 } },
+        .{ "paste,vt", .{ .action = .paste, .emit = .vt, .count = 1 } },
+        .{ "open,plain", .{ .action = .open, .emit = .plain, .count = 1 } },
+
+        // Count only
+        .{ "copy,5", .{ .action = .copy, .emit = .plain, .count = 5 } },
+        .{ "open,1", .{ .action = .open, .emit = .plain, .count = 1 } },
+        .{ "copy,007", .{ .action = .copy, .emit = .plain, .count = 7 } },
+        .{ "copy,65535", .{ .action = .copy, .emit = .plain, .count = 65535 } },
+
+        // Both, in either order
+        .{ "copy,html,5", .{ .action = .copy, .emit = .html, .count = 5 } },
+        .{ "paste,vt,12", .{ .action = .paste, .emit = .vt, .count = 12 } },
+        .{ "copy,5,html", .{ .action = .copy, .emit = .html, .count = 5 } },
+    };
+
+    for (cases) |case| {
+        var buf: [64]u8 = undefined;
+        const input = try std.fmt.bufPrint(&buf, "a=write_command_file:{s}", .{case[0]});
+        const binding = try parseSingle(input);
+        try testing.expect(binding.action == .write_command_file);
+        try testing.expectEqual(case[1], binding.action.write_command_file);
+    }
+}
+
+test "parse: write_command_file defaults" {
+    const testing = std.testing;
+    const binding = try parseSingle("a=write_command_file:copy");
+    const v = binding.action.write_command_file;
+    try testing.expectEqual(Action.WriteScreen.Action.copy, v.action);
+    try testing.expectEqual(Action.WriteScreen.Format.plain, v.emit);
+    try testing.expectEqual(@as(u16, 1), v.count);
+}
+
+test "parse: write_command_file invalid" {
+    const testing = std.testing;
+
+    const cases = [_][]const u8{
+        // Missing or bad action
+        "a=write_command_file",
+        "a=write_command_file:",
+        "a=write_command_file:,",
+        "a=write_command_file:,5",
+        "a=write_command_file:html",
+        "a=write_command_file:5",
+        "a=write_command_file:bogus,5",
+
+        // Empty segments
+        "a=write_command_file:copy,",
+        "a=write_command_file:copy,,5",
+        "a=write_command_file:copy,html,",
+
+        // Bad count
+        "a=write_command_file:copy,0",
+        "a=write_command_file:copy,html,0",
+        "a=write_command_file:copy,65536",
+        "a=write_command_file:copy,99999999999999999999",
+        "a=write_command_file:copy,-1",
+        "a=write_command_file:copy,+1",
+        "a=write_command_file:copy,1_0",
+        "a=write_command_file:copy, 5",
+        "a=write_command_file:copy,5x",
+
+        // Unknown argument
+        "a=write_command_file:copy,mixed",
+        "a=write_command_file:copy,HTML",
+        "a=write_command_file:copy,html,5,extra",
+
+        // Repeated kinds
+        "a=write_command_file:copy,html,vt",
+        "a=write_command_file:copy,html,html",
+        "a=write_command_file:copy,3,4",
+        "a=write_command_file:copy,3,html,4",
+    };
+
+    for (cases) |case| {
+        testing.expectError(Error.InvalidFormat, parseSingle(case)) catch |err| {
+            std.log.err("expected InvalidFormat for {s}", .{case});
+            return err;
+        };
+    }
+}
+
+test "parse: write_command_file format round trip" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const cases = [_]struct { []const u8, []const u8 }{
+        .{ "a=write_command_file:copy", "write_command_file:copy,plain,1" },
+        .{ "a=write_command_file:open,5", "write_command_file:open,plain,5" },
+        .{ "a=write_command_file:paste,html", "write_command_file:paste,html,1" },
+        .{ "a=write_command_file:copy,7,vt", "write_command_file:copy,vt,7" },
+    };
+
+    for (cases) |case| {
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        defer buf.deinit();
+        const binding = try parseSingle(case[0]);
+        try binding.action.format(&buf.writer);
+        try testing.expectEqualStrings(case[1], buf.written());
+
+        // The formatted output parses back to the same action.
+        const reparsed = try Binding.Action.parse(buf.written());
+        try testing.expect(binding.action.equal(reparsed));
+
+        // Clone preserves the value.
+        var arena = std.heap.ArenaAllocator.init(alloc);
+        defer arena.deinit();
+        const cloned = try binding.action.clone(arena.allocator());
+        try testing.expect(binding.action.equal(cloned));
+    }
+}
+
+test "parse: write_command_file does not change write_*_file parsing" {
+    const testing = std.testing;
+
+    // Counts are not accepted by the other write actions.
+    try testing.expectError(Error.InvalidFormat, parseSingle(
+        "a=write_screen_file:copy,5",
+    ));
+    try testing.expectError(Error.InvalidFormat, parseSingle(
+        "a=write_scrollback_file:copy,html,5",
+    ));
+    try testing.expectError(Error.InvalidFormat, parseSingle(
+        "a=write_selection_file:copy,5",
+    ));
+
+    {
+        const binding = try parseSingle("a=write_scrollback_file:paste");
+        try testing.expectEqual(Action.WriteScreen.paste, binding.action.write_scrollback_file);
+    }
+    {
+        const binding = try parseSingle("a=write_selection_file:open,vt");
+        try testing.expectEqual(Action.WriteScreen{
+            .action = .open,
+            .emit = .vt,
+        }, binding.action.write_selection_file);
+    }
 }
 
 test "action: format" {

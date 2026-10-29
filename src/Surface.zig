@@ -38,6 +38,7 @@ const internal_os = @import("os/main.zig");
 const inspectorpkg = @import("inspector/main.zig");
 const SurfaceMouse = @import("surface_mouse.zig");
 const ProcessInfo = @import("pty.zig").ProcessInfo;
+const ghostty_ai = @import("ghostty_ai.zig");
 
 const log = std.log.scoped(.surface);
 
@@ -187,6 +188,15 @@ search: ?Search = null,
 /// Used to rate limit BEL handling.
 last_bell_time: ?std.Io.Timestamp = null,
 
+/// The ghostty-ai split this surface launched, while it is open. Only one
+/// can be open at a time. See `ghosttyAiRequest`.
+ghostty_ai_split: ?GhosttyAiSplit = null,
+
+/// If this surface is a ghostty-ai split, the id of the request that
+/// launched it (from `GHOSTTY_AI_PARENT`). When this surface closes, it
+/// tells the surface that launched it.
+ghostty_ai_parent: ?u64 = null,
+
 /// The effect of an input event. This can be used by callers to take
 /// the appropriate action after an input event. For example, key
 /// input can be forwarded to the OS for further processing if it
@@ -207,6 +217,16 @@ pub const InputEffect = enum {
 };
 
 /// The search state for the surface.
+/// A ghostty-ai split launched by a surface.
+const GhosttyAiSplit = struct {
+    /// The request id, passed to the split as `GHOSTTY_AI_PARENT`.
+    id: u64,
+
+    /// The private temp dir holding the capture file. It is deleted when
+    /// the split closes, or when this surface closes first.
+    tmp_dir: internal_os.TempDir,
+};
+
 const Search = struct {
     state: terminal.search.Thread,
     thread: std.Thread,
@@ -351,6 +371,8 @@ const DerivedConfig = struct {
     notify_on_command_finish_action: configpkg.Config.NotifyOnCommandFinishAction,
     notify_on_command_finish_after: Duration,
     key_remaps: input.KeyRemapSet,
+    ghostty_ai_access: configpkg.Config.GhosttyAiAccess,
+    ghostty_ai_command: ?[:0]const u8,
 
     const Link = struct {
         regex: oni.Regex,
@@ -432,6 +454,11 @@ const DerivedConfig = struct {
             .notify_on_command_finish_action = config.@"notify-on-command-finish-action",
             .notify_on_command_finish_after = config.@"notify-on-command-finish-after",
             .key_remaps = try config.@"key-remap".clone(alloc),
+            .ghostty_ai_access = config.@"ghostty-ai-access",
+            .ghostty_ai_command = if (config.@"ghostty-ai-command") |cmd|
+                try ghostty_ai.shellCommand(alloc, cmd)
+            else
+                null,
 
             // Assignments happen sequentially so we have to do this last
             // so that the memory is captured from allocs above.
@@ -646,6 +673,11 @@ pub fn init(
         // Our conditional state is initialized to the app state. This
         // lets us get the most likely correct color theme and so on.
         .config_conditional_state = app.config_conditional_state,
+
+        .ghostty_ai_parent = if (config.env.map.get(ghostty_ai.env_parent)) |v|
+            std.fmt.parseInt(u64, v, 10) catch null
+        else
+            null,
     };
 
     // The command we're going to execute
@@ -874,6 +906,14 @@ pub fn deinit(self: *Surface) void {
     if (self.renderer_state.preedit) |p| self.alloc.free(p.codepoints);
     self.alloc.destroy(self.renderer_state.mutex);
     self.config.deinit();
+
+    // If we're a ghostty-ai split, let the surface that launched us know.
+    // If we launched one that is still open, its capture goes with us.
+    if (self.ghostty_ai_parent) |id| self.app.ghosttyAiSplitClosed(id);
+    if (self.ghostty_ai_split) |*split| {
+        split.tmp_dir.deinit();
+        self.ghostty_ai_split = null;
+    }
 
     log.info("surface closed id={x}", .{self.id});
 }
@@ -1149,6 +1189,11 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             const title = std.mem.sliceTo(&notification.title, 0);
             const body = std.mem.sliceTo(&notification.body, 0);
             try self.showDesktopNotification(title, body);
+        },
+
+        .ghostty_ai_request => |req| {
+            defer req.destroy();
+            try self.ghosttyAiRequest(req);
         },
 
         .redraw => self.redraw(),
@@ -5447,6 +5492,11 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             v,
         ),
 
+        .write_command_file => |v| try self.writeScreenFile(
+            .{ .command = v.count },
+            .{ .action = v.action, .emit = v.emit },
+        ),
+
         .new_tab => return try self.rt_app.performAction(
             .{ .surface = self },
             .new_tab,
@@ -5833,10 +5883,11 @@ fn closingAction(action: input.Binding.Action) bool {
 }
 
 /// The portion of the screen to write for writeScreenFile.
-const WriteScreenLoc = enum {
+const WriteScreenLoc = union(enum) {
     screen, // Full screen
     history, // History (scrollback)
     selection, // Selected text
+    command: u16, // The last N commands (requires shell integration)
 };
 
 fn writeScreenFile(
@@ -5913,6 +5964,18 @@ fn writeScreenFile(
             },
 
             .selection => self.io.terminal.screens.active.selection,
+
+            .command => |count| command: {
+                // Commands only exist on the primary screen.
+                if (self.io.terminal.screens.active_key == .alternate) {
+                    break :command null;
+                }
+
+                break :command self.io.terminal.screens.active.selectCommands(
+                    count,
+                    .{},
+                );
+            },
         };
 
         const sel = sel_ orelse {
@@ -5973,6 +6036,126 @@ fn writeScreenFile(
 
     // The action accepted the path, so retain the file for its consumer.
     retain_tmp_dir = true;
+}
+
+/// Handle a ghostty-ai request (OSC 6767) from the `ghostty-ai` shell
+/// function: write the commands the IO thread captured to a private temp
+/// file and open a split to the right running `ghostty-ai-command`.
+///
+/// The IO thread has already dropped requests that failed the access or
+/// plausibility check. Refusals after that point show a desktop
+/// notification. Nothing is ever written to the pty.
+fn ghosttyAiRequest(
+    self: *Surface,
+    req: *const apprt.surface.Message.GhosttyAiRequest,
+) !void {
+    // The config may have changed since the IO thread checked it. Like
+    // the IO thread, we only log this: the user asked for it.
+    if (self.config.ghostty_ai_access == .deny) {
+        log.info("ghostty-ai request refused, 'ghostty-ai-access' is set to deny", .{});
+        return;
+    }
+
+    const note = std.mem.sliceTo(&req.note, 0);
+    const refusal: ?[:0]const u8 = refusal: {
+        if (!ghostty_ai.isValidNote(note)) {
+            break :refusal "the note contains control characters";
+        }
+        if (self.ghostty_ai_split != null) {
+            break :refusal "a ghostty-ai split from this terminal is already open";
+        }
+        switch (req.capture) {
+            .text => {},
+            .alternate_screen => break :refusal "the alternate screen is active",
+            .no_commands => break :refusal "there are no commands to capture",
+        }
+        if (self.config.ghostty_ai_command == null) {
+            break :refusal "ghostty-ai-command is not set";
+        }
+        break :refusal null;
+    };
+    if (refusal) |reason| {
+        log.info("ghostty-ai request refused reason={s}", .{reason});
+        try self.showDesktopNotification("ghostty-ai request refused", reason);
+        return;
+    }
+    const command = self.config.ghostty_ai_command.?;
+
+    // Write the capture to a private temp dir. It is kept until the
+    // split closes.
+    var tmp_dir = try internal_os.TempDir.init();
+    errdefer tmp_dir.deinit();
+    const filename = "commands.txt";
+    {
+        var file = try tmp_dir.dir.createFile(
+            global.io(),
+            filename,
+            switch (builtin.target.os.tag) {
+                .windows => .{},
+                else => .{ .permissions = .fromMode(0o600) },
+            },
+        );
+        defer file.close(global.io());
+        try file.writeStreamingAll(global.io(), req.capture.text);
+    }
+
+    var path_buf: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+    const path_len = try tmp_dir.dir.realPathFile(
+        global.io(),
+        filename,
+        path_buf[0 .. path_buf.len - 1],
+    );
+    path_buf[path_len] = 0;
+    const path = path_buf[0..path_len :0];
+
+    const id = self.app.ghostty_ai_next_id;
+    self.app.ghostty_ai_next_id += 1;
+    var id_buf: [21]u8 = undefined;
+    const id_str = std.mem.printSentinel(&id_buf, "{d}", .{id}, 0) catch unreachable;
+
+    var title_buf: [256]u8 = undefined;
+    const title = try ghostty_ai.formatTitle(&title_buf, req.count, note);
+
+    // Mark the split open before launching it, in case the apprt
+    // creates and closes it before performAction returns.
+    self.ghostty_ai_split = .{ .id = id, .tmp_dir = tmp_dir };
+    errdefer self.ghostty_ai_split = null;
+
+    const env = [_]apprt.action.EnvVar{
+        .{ .key = ghostty_ai.env_file, .value = path },
+        .{ .key = ghostty_ai.env_note, .value = note },
+        .{ .key = ghostty_ai.env_parent, .value = id_str },
+    };
+    const performed = try self.rt_app.performAction(
+        .{ .surface = self },
+        .new_split_command,
+        .{
+            .direction = .right,
+            .command = command,
+            .env = &env,
+            .title = title,
+        },
+    );
+    if (!performed) {
+        log.warn("apprt did not open the ghostty-ai split", .{});
+        if (self.ghostty_ai_split) |*split| {
+            if (split.id == id) {
+                split.tmp_dir.deinit();
+                self.ghostty_ai_split = null;
+            }
+        }
+        return;
+    }
+}
+
+/// Called when the ghostty-ai split with the given request id closes. If
+/// we launched it, delete its capture so we can launch another.
+pub fn ghosttyAiSplitClosed(self: *Surface, id: u64) void {
+    if (self.ghostty_ai_split) |*split| {
+        if (split.id != id) return;
+        split.tmp_dir.deinit();
+        self.ghostty_ai_split = null;
+    }
 }
 
 /// The payload for completing a clipboard request with

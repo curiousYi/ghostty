@@ -339,6 +339,67 @@ _ghostty_deferred_init() {
       }
     fi
 
+    # ghostty-ai
+    #
+    # Ask Ghostty to send the last N commands and their output to the
+    # configured LLM tool, with an optional note:
+    #
+    #   ghostty-ai [count] [note...]
+    #
+    # The first argument is the count only if it is a whole number from 1 to
+    # 99 without a leading zero. Anything else (404, 2fa, -3, 05) starts the
+    # note. A leading `--` ends option parsing, so everything after it is the
+    # note. The request is sent as `OSC 6767 ; ai ; count=N ; note=BASE64 ST`.
+    # The note is base64-encoded, so it can't break out of the sequence.
+    if [[ "$GHOSTTY_SHELL_FEATURES" == *"ghostty-ai"* ]]; then
+      ghostty-ai() {
+        builtin emulate -L zsh -o no_warn_create_global -o no_aliases
+        builtin local count=5 note b64 IFS=' '
+        builtin local -i len
+
+        case $1 in
+          -h|--help)
+            builtin print -rl -- "usage: ghostty-ai [count] [--] [note...]" \
+              "" \
+              "Send the last count (1-99, default 5) commands and their output" \
+              "to the configured ghostty-ai-command, with an optional note." \
+              "Use -- before a note that starts with a number or a dash."
+            builtin return 0
+            ;;
+        esac
+
+        case $1 in
+          [1-9]|[1-9][0-9])
+            count=$1
+            builtin shift
+            ;;
+        esac
+
+        [[ $1 == -- ]] && builtin shift
+
+        # Join the remaining arguments with single spaces.
+        note="$*"
+        if [[ -n $note ]]; then
+          b64=$(builtin print -rn -- "$note" | builtin command base64 | builtin command tr -d '\r\n')
+          if [[ -z $b64 ]]; then
+            builtin print -ru2 -- "ghostty-ai: base64 failed to encode the note"
+            builtin return 1
+          fi
+          # Count bytes from the base64 length so the locale doesn't matter.
+          (( len = ${#b64} / 4 * 3 ))
+          [[ $b64 == *= ]] && (( len-- ))
+          [[ $b64 == *== ]] && (( len-- ))
+          if (( len > 255 )); then
+            builtin print -ru2 -- "ghostty-ai: the note is $len bytes, the limit is 255"
+            builtin return 1
+          fi
+          builtin print -rnu $_ghostty_fd -- $'\e]6767;ai;count='$count';note='$b64$'\e\\'
+        else
+          builtin print -rnu $_ghostty_fd -- $'\e]6767;ai;count='$count$'\e\\'
+        fi
+      }
+    fi
+
     # Some zsh users manually run `source ~/.zshrc` in order to apply rc file
     # changes to the current shell. This is a terrible practice that breaks many
     # things, including our shell integration. For example, Oh My Zsh and Prezto

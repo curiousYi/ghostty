@@ -944,6 +944,23 @@ typedef struct {
   uint64_t len;
 } ghostty_action_scrollbar_s;
 
+// apprt.action.NewSplitCommand.Details
+typedef struct {
+  const char* command;
+  const ghostty_env_var_s* env_vars;
+  size_t env_var_count;
+  const char* title;
+} ghostty_action_new_split_command_details_s;
+
+// apprt.action.NewSplitCommand.C
+//
+// Every pointer, including details and everything it points to, is only
+// valid for the duration of the action callback. Copy what you keep.
+typedef struct {
+  ghostty_action_split_direction_e direction;
+  const ghostty_action_new_split_command_details_s* details;
+} ghostty_action_new_split_command_s;
+
 // apprt.Action.Key
 typedef enum {
   GHOSTTY_ACTION_QUIT,
@@ -1016,10 +1033,12 @@ typedef enum {
   GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD,
   GHOSTTY_ACTION_MOVE_TAB_TO_NEW_WINDOW,
   GHOSTTY_ACTION_RESIZE_WINDOW,
+  GHOSTTY_ACTION_NEW_SPLIT_COMMAND,
 } ghostty_action_tag_e;
 
 typedef union {
   ghostty_action_split_direction_e new_split;
+  ghostty_action_new_split_command_s new_split_command;
   ghostty_action_fullscreen_e toggle_fullscreen;
   ghostty_action_move_tab_s move_tab;
   ghostty_action_goto_tab_e goto_tab;

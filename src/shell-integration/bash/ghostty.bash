@@ -128,6 +128,67 @@ if [[ "$GHOSTTY_SHELL_FEATURES" == *ssh-* ]]; then
   }
 fi
 
+# ghostty-ai
+#
+# Ask Ghostty to send the last N commands and their output to the
+# configured LLM tool, with an optional note:
+#
+#   ghostty-ai [count] [note...]
+#
+# The first argument is the count only if it is a whole number from 1 to
+# 99 without a leading zero. Anything else (404, 2fa, -3, 05) starts the
+# note. A leading `--` ends option parsing, so everything after it is the
+# note. The request is sent as `OSC 6767 ; ai ; count=N ; note=BASE64 ST`.
+# The note is base64-encoded, so it can't break out of the sequence.
+if [[ "$GHOSTTY_SHELL_FEATURES" == *"ghostty-ai"* ]]; then
+  function ghostty-ai {
+    builtin local count=5 note b64 len
+
+    case "$1" in
+      -h | --help)
+        builtin printf '%s\n' \
+          "usage: ghostty-ai [count] [--] [note...]" \
+          "" \
+          "Send the last count (1-99, default 5) commands and their output" \
+          "to the configured ghostty-ai-command, with an optional note." \
+          "Use -- before a note that starts with a number or a dash."
+        builtin return 0
+        ;;
+    esac
+
+    case "$1" in
+      [1-9] | [1-9][0-9])
+        count="$1"
+        builtin shift
+        ;;
+    esac
+
+    if [[ "$1" == "--" ]]; then builtin shift; fi
+
+    # Join the remaining arguments with single spaces, whatever IFS is.
+    builtin local IFS=' '
+    note="$*"
+    if [[ -n "$note" ]]; then
+      b64=$(builtin printf '%s' "$note" | builtin command base64 | builtin command tr -d '\r\n')
+      if [[ -z "$b64" ]]; then
+        builtin printf 'ghostty-ai: base64 failed to encode the note\n' >&2
+        builtin return 1
+      fi
+      # Count bytes from the base64 length so the locale doesn't matter.
+      len=$(( ${#b64} / 4 * 3 ))
+      [[ "$b64" == *"=" ]] && len=$((len - 1))
+      [[ "$b64" == *"==" ]] && len=$((len - 1))
+      if (( len > 255 )); then
+        builtin printf 'ghostty-ai: the note is %d bytes, the limit is 255\n' "$len" >&2
+        builtin return 1
+      fi
+      builtin printf '\e]6767;ai;count=%s;note=%s\e\\' "$count" "$b64"
+    else
+      builtin printf '\e]6767;ai;count=%s\e\\' "$count"
+    fi
+  }
+fi
+
 # This is set to 1 when we're executing a command so that we don't
 # send prompt marks multiple times.
 _ghostty_executing=""

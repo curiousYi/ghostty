@@ -756,6 +756,10 @@ pub const Surface = extern struct {
             shell_integration: ?configpkg.Config.ShellIntegration = null,
             working_directory: ?[:0]const u8 = null,
 
+            /// Owned copies of Overrides.env, keys and values included.
+            env: []const apprt.action.EnvVar = &.{},
+            wait_after_command: bool = false,
+
             pub const none: @This() = .{};
         } = .none,
 
@@ -772,8 +776,42 @@ pub const Surface = extern struct {
             .command = if (overrides.command) |c| c.clone(alloc) catch null else null,
             .shell_integration = overrides.shell_integration,
             .working_directory = if (overrides.working_directory) |wd| alloc.dupeSentinel(u8, wd, 0) catch null else null,
+            .env = dupeEnv(alloc, overrides.env) catch &.{},
+            .wait_after_command = overrides.wait_after_command,
         };
         return self;
+    }
+
+    fn dupeEnv(
+        alloc: Allocator,
+        env: []const apprt.action.EnvVar,
+    ) Allocator.Error![]const apprt.action.EnvVar {
+        if (env.len == 0) return &.{};
+        const result = try alloc.alloc(apprt.action.EnvVar, env.len);
+        var i: usize = 0;
+        errdefer {
+            for (result[0..i]) |v| {
+                alloc.free(v.key);
+                alloc.free(v.value);
+            }
+            alloc.free(result);
+        }
+        while (i < env.len) : (i += 1) {
+            const key = try alloc.dupeSentinel(u8, env[i].key, 0);
+            errdefer alloc.free(key);
+            const value = try alloc.dupeSentinel(u8, env[i].value, 0);
+            result[i] = .{ .key = key, .value = value };
+        }
+        return result;
+    }
+
+    fn freeEnv(alloc: Allocator, env: []const apprt.action.EnvVar) void {
+        if (env.len == 0) return;
+        for (env) |v| {
+            alloc.free(v.key);
+            alloc.free(v.value);
+        }
+        alloc.free(env);
     }
 
     pub fn core(self: *Self) ?*CoreSurface {
@@ -2015,6 +2053,8 @@ pub const Surface = extern struct {
             alloc.free(wd);
             priv.overrides.working_directory = null;
         }
+        freeEnv(alloc, priv.overrides.env);
+        priv.overrides.env = &.{};
 
         // Clean up key sequence and key table state
         for (priv.key_sequence.items) |s| alloc.free(s);
@@ -3587,6 +3627,17 @@ pub const Surface = extern struct {
             var wd_val: configpkg.WorkingDirectory = .{ .path = try config_alloc.dupe(u8, wd) };
             try wd_val.finalize(config_alloc);
             config.@"working-directory" = wd_val;
+        }
+        if (priv.overrides.env.len > 0) {
+            const config_alloc = config.arenaAlloc();
+            for (priv.overrides.env) |v| try config.env.map.put(
+                config_alloc,
+                try config_alloc.dupeSentinel(u8, v.key, 0),
+                try config_alloc.dupeSentinel(u8, v.value, 0),
+            );
+        }
+        if (priv.overrides.wait_after_command) {
+            config.@"wait-after-command" = true;
         }
 
         // Properties that can impact surface init
