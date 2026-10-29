@@ -727,6 +727,7 @@ fn actionCommands(action: Action.Key) []const Command {
         .adjust_selection,
         .jump_to_prompt,
         .write_scrollback_file,
+        .write_command_file,
         .goto_tab,
         .resize_split,
         .activate_key_table,

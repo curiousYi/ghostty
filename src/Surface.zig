@@ -5452,6 +5452,9 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             v,
         ),
 
+        // ghostty-ai: stub, replaced in integration
+        .write_command_file => return false,
+
         .new_tab => return try self.rt_app.performAction(
             .{ .surface = self },
             .new_tab,
