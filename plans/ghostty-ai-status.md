@@ -112,8 +112,15 @@ command looks idle.
 ### E: config (`src/config/Config.zig`)
 
 - The default `ghostty-ai-command` (shell form):
-  `claude --tools "" --append-system-prompt "$(cat "$GHOSTTY_AI_FILE")" "$GHOSTTY_AI_NOTE"`.
-  - The flags were checked against `claude --help` for version 2.1.312.
+  `claude --tools "" --strict-mcp-config --append-system-prompt "$(cat "$GHOSTTY_AI_FILE")" "$GHOSTTY_AI_NOTE"`.
+  - The flags were checked against `claude --help` for version 2.1.312;
+    `--strict-mcp-config` was added and checked on 2.1.318.
+  - `--tools` only covers Claude Code's built-in tools. `--strict-mcp-config`
+    with no `--mcp-config` keeps MCP servers (including claude.ai connectors)
+    out too.
+  - A resumed session (`claude -r <id>`) does not keep `--tools ""`: it must
+    be passed again on resume (verified on 2.1.318).
+  - The docs give `--tools "Read,Grep,Glob"` as an opt-in alternative.
   - **`--tools` takes any number of values, so it must not come directly
     before the note.**
 - `ghostty-ai-access` defaults to `allow`.
