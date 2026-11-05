@@ -336,6 +336,16 @@ class BaseTerminalController: NSWindowController,
     func surfaceTreeDidChange(from: SplitTree<Ghostty.SurfaceView>, to: SplitTree<Ghostty.SurfaceView>) {
         for surfaceView in from where !to.contains(surfaceView) {
             cancelPendingClipboardConfirmation(for: surfaceView)
+
+            // A removed surface can stay alive for undo, and is then not
+            // on screen. Tell libghostty, so it can, for example, refuse
+            // to send a ghostty-ai follow-up into a split the user closed.
+            // If the surface is added to a tree again (undo, or a move to
+            // another window), that tree's sync restores the state.
+            if let surface = surfaceView.surface, surfaceView.isWindowVisible {
+                ghostty_surface_set_occlusion(surface, false)
+                surfaceView.isWindowVisible = false
+            }
         }
 
         // If our surface tree becomes empty then we have no focused surface.

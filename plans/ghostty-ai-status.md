@@ -115,7 +115,9 @@ command looks idle.
 ### E: config (`src/config/Config.zig`)
 
 - The default `ghostty-ai-command` (shell form):
-  `claude --tools "" --strict-mcp-config --append-system-prompt "$(cat "$GHOSTTY_AI_FILE")" "$GHOSTTY_AI_NOTE"`.
+  `claude --tools "" --strict-mcp-config --append-system-prompt "<no-tools instruction> $(cat "$GHOSTTY_AI_FILE")" "$GHOSTTY_AI_NOTE"`.
+    The instruction (added 2026-11-04 for issue 5) tells Claude it has no
+    tools, must not write tool-call markup, and should say what to run.
   - The flags were checked against `claude --help` for version 2.1.312;
     `--strict-mcp-config` was added and checked on 2.1.318.
   - `--tools` only covers Claude Code's built-in tools. `--strict-mcp-config`
@@ -254,7 +256,9 @@ The user tested the debug macOS build (`zig-out/Ghostty.app`, built from
 the demo script exactly. **The end-to-end flow works:** `ghostty-ai` opened
 a split running `claude`, which named the `@acme/session-client` 1.4.2 →
 2.0.0 bump as the likely cause. The issues below were recorded and are not
-addressed yet.
+addressed yet. **Update 2026-11-04:** 1, 3, 5 and 7 are addressed (see
+"Fixes for the 10-29 issues" below). 2 is expected behaviour, and 4 and 6
+are still open.
 
 1. **zsh globbing breaks unquoted notes.** `ghostty-ai 5 "why is the above
    failing"?` fails with `zsh: no matches found` before the function runs,
@@ -305,6 +309,32 @@ addressed yet.
    earlier failed `ghostty-ai ... ?` line and its zsh error, and Claude
    commented on it. This is harmless and expected (it is a command in the
    history), but earlier `ghostty-ai` lines could be skipped.
+
+## Fixes for the 10-29 issues (2026-11-04)
+
+- **1 (zsh globbing):** the zsh integration adds
+  `alias ghostty-ai='noglob ghostty-ai'`, unless the user already has a
+  `ghostty-ai` alias. Checked with `zsh -f`: `ghostty-ai why?` and
+  `ghostty-ai why*` (with a matching file present) arrive unexpanded. bash
+  and fish are unchanged: the docs say to quote such notes there.
+- **3 (refusal right after closing the split):** with follow-ups, a
+  request in the undo window would have been typed into the hidden split.
+  `BaseTerminalController.surfaceTreeDidChange` now sets occlusion to not
+  visible for surfaces removed from the tree (the tree they are added back
+  to restores it: undo, or a move to another window, which removes before
+  it adds). `ghosttyAiPasteFollowUp` refuses when the split is not visible,
+  with "If you just closed it, try again in a few seconds". After
+  `undo-timeout` the surface is freed and the next request opens a new
+  split, as before.
+- **5 (fake tool calls):** reproduced with `claude -p` (2 out of 2 runs
+  printed `<invoke name="Read">` / `"Bash"` markup). The default command now
+  starts the appended system prompt with an instruction that there are no
+  tools. 0 out of 2 runs printed markup, and Claude listed what to run
+  instead.
+- **7 (earlier `ghostty-ai` lines in captures):** `ghostty_ai.capture` walks
+  the prompts itself and skips commands whose input is `ghostty-ai`
+  (`isPlausibleInput`). They don't count towards `count`. The keybind path
+  (`Screen.selectCommands`) is unchanged.
 
 ## Environment (as of 2026-10-29, after Step 2)
 
