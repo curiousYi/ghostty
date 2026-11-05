@@ -189,7 +189,8 @@ search: ?Search = null,
 last_bell_time: ?std.Io.Timestamp = null,
 
 /// The ghostty-ai split this surface launched, while it is open. Only one
-/// can be open at a time. See `ghosttyAiRequest`.
+/// can be open at a time: later requests are sent to it as follow-ups.
+/// See `ghosttyAiRequest`.
 ghostty_ai_split: ?GhosttyAiSplit = null,
 
 /// If this surface is a ghostty-ai split, the id of the request that
@@ -6040,11 +6041,13 @@ fn writeScreenFile(
 
 /// Handle a ghostty-ai request (OSC 6767) from the `ghostty-ai` shell
 /// function: write the commands the IO thread captured to a private temp
-/// file and open a split to the right running `ghostty-ai-command`.
+/// file and open a split to the right running `ghostty-ai-command`. If
+/// the split this surface launched is still open, send the request to it
+/// as a follow-up instead (see `ghosttyAiPasteFollowUp`).
 ///
 /// The IO thread has already dropped requests that failed the access or
 /// plausibility check. Refusals after that point show a desktop
-/// notification. Nothing is ever written to the pty.
+/// notification. Nothing is ever written to this surface's pty.
 fn ghosttyAiRequest(
     self: *Surface,
     req: *const apprt.surface.Message.GhosttyAiRequest,
@@ -6061,14 +6064,22 @@ fn ghosttyAiRequest(
         if (!ghostty_ai.isValidNote(note)) {
             break :refusal "the note contains control characters";
         }
-        if (self.ghostty_ai_split != null) {
-            break :refusal "a ghostty-ai split from this terminal is already open";
-        }
         switch (req.capture) {
             .text => {},
             .alternate_screen => break :refusal "the alternate screen is active",
             .no_commands => break :refusal "there are no commands to capture",
         }
+
+        // A split is already open: send it a follow-up.
+        if (self.ghostty_ai_split) |split| {
+            const split_surface = self.app.ghosttyAiSplitSurface(split.id) orelse
+                break :refusal "the ghostty-ai split is not ready yet";
+            break :refusal try split_surface.ghosttyAiPasteFollowUp(
+                note,
+                req.capture.text,
+            );
+        }
+
         if (self.config.ghostty_ai_command == null) {
             break :refusal "ghostty-ai-command is not set";
         }
@@ -6079,6 +6090,10 @@ fn ghosttyAiRequest(
         try self.showDesktopNotification("ghostty-ai request refused", reason);
         return;
     }
+
+    // The follow-up was sent.
+    if (self.ghostty_ai_split != null) return;
+
     const command = self.config.ghostty_ai_command.?;
 
     // Write the capture to a private temp dir. It is kept until the
@@ -6146,6 +6161,56 @@ fn ghosttyAiRequest(
         }
         return;
     }
+}
+
+/// Called on a ghostty-ai split: paste a follow-up request (the note and
+/// the new capture) into the program running in it and press Enter, so it
+/// reaches the session that is still open, such as an interactive Claude
+/// Code. Returns the reason if it was refused.
+///
+/// The text is only sent as a bracketed paste, so newlines in the capture
+/// can't act as Enter. The paste encoding replaces ESC and other control
+/// bytes with spaces, so the text can't end the paste early. The Enter
+/// after it answers whatever the program shows at that moment, which is
+/// documented with `ghostty-ai-command`.
+fn ghosttyAiPasteFollowUp(
+    self: *Surface,
+    note: []const u8,
+    capture_text: []const u8,
+) !?[:0]const u8 {
+    if (self.readonly) return "the ghostty-ai split is read-only";
+    if (self.child_exited) return "the program in the ghostty-ai split has exited";
+
+    {
+        self.renderer_state.mutex.lockUncancelable(global.io());
+        defer self.renderer_state.mutex.unlock(global.io());
+        const opts: input.paste.Options = .fromTerminal(&self.io.terminal);
+        if (!opts.bracketed) {
+            return "the program in the ghostty-ai split does not accept pasted text";
+        }
+        self.scrollToBottom() catch |err| {
+            log.warn("error scrolling to bottom err={}", .{err});
+        };
+    }
+
+    var message: std.Io.Writer.Allocating = .init(self.alloc);
+    defer message.deinit();
+    try ghostty_ai.writeFollowUp(&message.writer, note, capture_text);
+
+    var aw: std.Io.Writer.Allocating = .init(self.alloc);
+    errdefer aw.deinit();
+    try input.paste.encodeWriter(
+        &aw.writer,
+        message.written(),
+        .{ .bracketed = true },
+    );
+    try aw.writer.writeByte('\r');
+
+    self.queueIo(.{ .write_alloc = .{
+        .alloc = self.alloc,
+        .data = try aw.toOwnedSlice(),
+    } }, .unlocked);
+    return null;
 }
 
 /// Called when the ghostty-ai split with the given request id closes. If

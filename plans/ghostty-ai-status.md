@@ -11,6 +11,9 @@ done, what is decided since the plan, and what is next.
   lives outside the repo.
 - **Step 2 (integration) is done** (see "Step 2: integration (done)").
   Step 3 (demo and report) is next.
+- **Follow-ups (2026-11-04):** a second `ghostty-ai` while the split is open
+  is pasted into it instead of refused. See "Follow-ups". Manual testing:
+  `plans/ghostty-ai-follow-up-testing.md`.
 - Neither the macOS app nor GTK has been built. See "Environment".
 
 ## Branch `ghostty-ai`
@@ -222,6 +225,27 @@ A filter that matches nothing still runs 77 baseline tests.
   were captured.
 - Verified: the targeted test filters pass, `zig build` (including the
   macOS app) succeeds. Not yet verified end to end in the app.
+
+## Follow-ups (2026-11-04)
+
+- `Surface.ghosttyAiRequest`: when `ghostty_ai_split` is set, it finds the
+  split with `App.ghosttyAiSplitSurface(id)` (the surface whose
+  `ghostty_ai_parent` matches) and calls `ghosttyAiPasteFollowUp` on it,
+  instead of refusing with "already open".
+- `ghosttyAiPasteFollowUp` refuses (desktop notification) if the split is
+  read-only, its child has exited, or bracketed paste is off. Otherwise it
+  writes `ghostty_ai.writeFollowUp` (note, blank line, capture) through
+  `input.paste.encodeWriter` with `bracketed = true` (ESC and other control
+  bytes become spaces), followed by `\r`.
+- The user chose auto-send (Enter after the paste) over paste-only. The
+  risk, documented with `ghostty-ai-command`: the Enter answers whatever
+  the split shows, such as a tool-permission prompt in a non-default
+  command.
+- The alternate-screen and no-commands refusals still apply to
+  follow-ups. The split title still shows the first request.
+- Open questions are in the test checklist: whether Enter right after the
+  paste end is treated as a submit (A4), and what happens inside the macOS
+  undo window (C5, related to issue 3 below).
 
 ## Manual testing: issues reported (2026-10-29)
 
