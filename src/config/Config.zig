@@ -2524,6 +2524,9 @@ keybind: Keybinds = .{},
 ///
 /// For example, `ghostty-ai 10 "why is this failing?"`. `count` is the
 /// number of recent commands to capture, from 1 to 99, and defaults to 5.
+/// Earlier `ghostty-ai` commands are skipped and don't count. In zsh the
+/// note is not glob-expanded, so `ghostty-ai why?` works unquoted. In bash
+/// and fish, quote a note that contains `?`, `*` or `[`.
 /// The function asks Ghostty to write those commands and their output to
 /// a private temporary file (mode 0600). Ghostty then opens a split to the
 /// right of the current one, runs this command in it, and titles the split
@@ -2538,7 +2541,10 @@ keybind: Keybinds = .{},
 /// as a follow-up. It pastes them into the program there (as a bracketed
 /// paste) and presses Enter, so with the default they arrive as your next
 /// message in the same Claude session. The follow-up is refused if the
-/// program in the split has not enabled bracketed paste.
+/// program in the split has not enabled bracketed paste, or if the split
+/// is not visible. On macOS a split you just closed stays alive (but not
+/// visible) for `undo-timeout`, so a request right after closing it is
+/// refused until then.
 ///
 /// The Enter answers whatever the program in the split is showing at that
 /// moment. With the default nothing else can be showing, but with a tool
@@ -2565,10 +2571,13 @@ keybind: Keybinds = .{},
 ///
 /// The default is:
 ///
-///     claude --tools "" --strict-mcp-config --append-system-prompt "$(cat "$GHOSTTY_AI_FILE")" "$GHOSTTY_AI_NOTE"
+///     claude --tools "" --strict-mcp-config --append-system-prompt "You have no tools in this session: you cannot read files, run commands, or browse. Never write tool-call markup. Answer only from the terminal history below, and say what the user should run or check if you need more. $(cat "$GHOSTTY_AI_FILE")" "$GHOSTTY_AI_NOTE"
 ///
 /// This runs Claude Code with the capture as extra system prompt and the
-/// note as the first message. `--tools ""` disables every built-in Claude
+/// note as the first message. The sentence before the capture matters:
+/// Claude Code's own system prompt still describes tools, and without it
+/// Claude tends to print tool-call markup as text and then wait for
+/// results that never come. `--tools ""` disables every built-in Claude
 /// tool, and `--strict-mcp-config` (with no `--mcp-config`) loads no MCP
 /// servers, so the default can only give text advice: it cannot run
 /// commands, read other files, edit anything, or call connected services.
@@ -2599,7 +2608,7 @@ keybind: Keybinds = .{},
 /// `direct:` command is not shell-expanded, so `$GHOSTTY_AI_*` references
 /// in it are not expanded either.
 @"ghostty-ai-command": ?Command = .{
-    .shell = "claude --tools \"\" --strict-mcp-config --append-system-prompt \"$(cat \"$GHOSTTY_AI_FILE\")\" \"$GHOSTTY_AI_NOTE\"",
+    .shell = "claude --tools \"\" --strict-mcp-config --append-system-prompt \"You have no tools in this session: you cannot read files, run commands, or browse. Never write tool-call markup. Answer only from the terminal history below, and say what the user should run or check if you need more. $(cat \"$GHOSTTY_AI_FILE\")\" \"$GHOSTTY_AI_NOTE\"",
 },
 
 /// Whether programs running in the terminal may start `ghostty-ai`
@@ -11023,7 +11032,7 @@ test "ghostty-ai default and parse" {
         const cmd = cfg.@"ghostty-ai-command".?;
         try testing.expect(cmd == .shell);
         try testing.expectEqualStrings(
-            "claude --tools \"\" --strict-mcp-config --append-system-prompt \"$(cat \"$GHOSTTY_AI_FILE\")\" \"$GHOSTTY_AI_NOTE\"",
+            "claude --tools \"\" --strict-mcp-config --append-system-prompt \"You have no tools in this session: you cannot read files, run commands, or browse. Never write tool-call markup. Answer only from the terminal history below, and say what the user should run or check if you need more. $(cat \"$GHOSTTY_AI_FILE\")\" \"$GHOSTTY_AI_NOTE\"",
             cmd.shell,
         );
     }

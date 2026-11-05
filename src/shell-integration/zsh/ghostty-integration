@@ -398,6 +398,11 @@ _ghostty_deferred_init() {
           builtin print -rnu $_ghostty_fd -- $'\e]6767;ai;count='$count$'\e\\'
         fi
       }
+
+      # Without this, zsh expands an unquoted note such as `why?` as a glob
+      # before the function runs, and fails with "no matches found". Keep a
+      # ghostty-ai alias the user already has.
+      (( $+aliases[ghostty-ai] )) || builtin alias ghostty-ai='noglob ghostty-ai'
     fi
 
     # Some zsh users manually run `source ~/.zshrc` in order to apply rc file
