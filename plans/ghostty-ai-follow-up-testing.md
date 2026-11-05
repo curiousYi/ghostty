@@ -28,8 +28,8 @@ are the useful part: what you saw, how it felt, anything surprising.
       ```
       /usr/bin/log show --last 10m --info --predicate 'subsystem BEGINSWITH "com.mitchellh.ghostty"' | grep -i ghostty-ai
       ```
-- [ ] zsh: quote notes that contain `?` or `*` (known issue: unquoted
-      globs fail before the function runs).
+- [ ] In bash and fish, quote notes that contain `?`, `*` or `[`. zsh no
+      longer needs it (see F1).
 
 ## A. Core flow
 
@@ -121,9 +121,10 @@ are the useful part: what you saw, how it felt, anything surprising.
       (⌘W), then run `ghostty-ai` within 5 seconds. On macOS a closed split
       stays alive for `undo-timeout` so ⌘Z can restore it (known issue 3 in
       `ghostty-ai-status.md`).
-      Expected: unclear, which is why it's here. Possible outcomes: a
-      refusal, a follow-up typed into the hidden split (bad: check by
-      pressing ⌘Z to restore it), or a new split. Record which.
+      Expected: refused with "the ghostty-ai split is not visible. If you
+      just closed it, try again in a few seconds." Then press ⌘Z: the
+      restored split must **not** contain the follow-up. After 5 s without
+      undo, `ghostty-ai` opens a new split.
       Result: | Notes:
 
 - [ ] **C6. `wait-after-command = true`.** With this config set, exit Claude
@@ -131,6 +132,13 @@ are the useful part: what you saw, how it felt, anything surprising.
       follow-up.
       Expected: refused with "the program in the ghostty-ai split has
       exited".
+      Result: | Notes:
+
+- [ ] **C7. The split in another tab of the same window.** With the
+      ghostty-ai split open, switch to another tab, then back, and send a
+      follow-up.
+      Expected: sent normally. (Follow-ups to a split that isn't visible
+      are refused, so this checks that coming back restores visibility.)
       Result: | Notes:
 
 ## D. Several terminals
@@ -176,6 +184,26 @@ are the useful part: what you saw, how it felt, anything surprising.
       command, ask Claude in the split: "List the exact names of every tool
       you can call, or say NONE."
       Expected: `NONE` (no Bash, Read, Gmail, Notion, …).
+      Result: | Notes:
+
+## F. Fixes for the 10-29 issues
+
+- [ ] **F1. zsh: an unquoted note.** `ghostty-ai 3 why is the above failing?`
+      with no quotes.
+      Expected: it works, and Claude gets the note with the `?`.
+      Result: | Notes:
+
+- [ ] **F2. No fake tool calls.** With the default command, ask something
+      that invites tool use ("why is this failing? check the code").
+      Expected: no `<invoke …>` markup. Claude says it can't read files and
+      tells you what to run or paste.
+      Result: | Notes:
+
+- [ ] **F3. Earlier `ghostty-ai` lines are not in captures.** Run a
+      command, `ghostty-ai 1 "first"`, then right away
+      `ghostty-ai 1 "follow-up"`.
+      Expected: the follow-up's capture shows the real command, not the
+      `ghostty-ai 1 "first"` line.
       Result: | Notes:
 
 ## Overall

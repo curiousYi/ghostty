@@ -6181,6 +6181,13 @@ fn ghosttyAiPasteFollowUp(
     if (self.readonly) return "the ghostty-ai split is read-only";
     if (self.child_exited) return "the program in the ghostty-ai split has exited";
 
+    // On macOS a closed split stays alive for `undo-timeout` so it can be
+    // restored, and is reported as not visible meanwhile. Don't type into
+    // it where the user can't see it.
+    if (!self.visible) {
+        return "the ghostty-ai split is not visible. If you just closed it, try again in a few seconds.";
+    }
+
     {
         self.renderer_state.mutex.lockUncancelable(global.io());
         defer self.renderer_state.mutex.unlock(global.io());

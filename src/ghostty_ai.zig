@@ -41,6 +41,15 @@ pub fn isPlausible(alloc: Allocator, t: *terminal.Terminal) Allocator.Error!bool
 
     var it = screen.cursor.page_pin.promptIterator(.left_up, null);
     const prompt = it.next() orelse return false;
+    return try isGhosttyAiPrompt(alloc, screen, prompt);
+}
+
+/// Returns true if the command line at `prompt` runs `ghostty-ai`.
+fn isGhosttyAiPrompt(
+    alloc: Allocator,
+    screen: *terminal.Screen,
+    prompt: terminal.Pin,
+) Allocator.Error!bool {
     const hl = screen.pages.highlightSemanticContent(
         prompt,
         .input,
@@ -85,9 +94,11 @@ pub const Capture = union(enum) {
 };
 
 /// Capture the last `count` commands before the active one, which is
-/// the `ghostty-ai` command itself. The text starts with a header line
-/// that names the count and the working directory. The caller must hold
-/// the terminal lock.
+/// the `ghostty-ai` command itself. Earlier `ghostty-ai` commands are
+/// skipped and don't count: they carry no useful output, and a follow-up
+/// would otherwise often capture only the previous request. The text
+/// starts with a header line that names the count and the working
+/// directory. The caller must hold the terminal lock.
 pub fn capture(
     alloc: Allocator,
     t: *terminal.Terminal,
@@ -96,10 +107,35 @@ pub fn capture(
     if (t.screens.active_key == .alternate) return .alternate_screen;
 
     const screen = t.screens.active;
-    const sel = screen.selectCommands(
-        count,
-        .{ .exclude_active = true },
-    ) orelse return .no_commands;
+    if (!screen.semantic_prompt.seen) return .no_commands;
+
+    // Walk prompts up from the cursor. The first is the active command.
+    // Each earlier prompt starts a command that runs up to the row before
+    // the next newer prompt. This is `Screen.selectCommands` with the
+    // `ghostty-ai` commands left out, so the result can have gaps and is
+    // a list of selections, newest first.
+    var sels: std.ArrayList(terminal.Selection) = .empty;
+    defer sels.deinit(alloc);
+    var it = screen.cursor.page_pin.promptIterator(.left_up, null);
+    var newer = it.next() orelse return .no_commands;
+    while (sels.items.len < count) {
+        const prompt = it.next() orelse break;
+        defer newer = prompt;
+        if (try isGhosttyAiPrompt(alloc, screen, prompt)) continue;
+
+        var end = newer.up(1) orelse continue;
+        end.x = end.node.cols() - 1;
+
+        // Trim trailing whitespace.
+        var cell_it = end.cellIterator(.left_up, prompt);
+        while (cell_it.next()) |p| {
+            end = p;
+            if (p.rowAndCell().cell.hasText()) break;
+        }
+
+        try sels.append(alloc, .init(prompt, end, false));
+    }
+    if (sels.items.len == 0) return .no_commands;
 
     var aw: std.Io.Writer.Allocating = .init(alloc);
     errdefer aw.deinit();
@@ -114,13 +150,20 @@ pub fn capture(
         },
     );
 
-    var formatter: terminal.formatter.ScreenFormatter = .init(screen, .{
-        .emit = .plain,
-        .unwrap = true,
-    });
-    formatter.content = .{ .selection = sel.ordered(screen, .forward) };
-    try formatter.format(writer);
-    try writer.writeByte('\n');
+    // Oldest first.
+    var i = sels.items.len;
+    while (i > 0) {
+        i -= 1;
+        var formatter: terminal.formatter.ScreenFormatter = .init(screen, .{
+            .emit = .plain,
+            .unwrap = true,
+        });
+        formatter.content = .{
+            .selection = sels.items[i].ordered(screen, .forward),
+        };
+        try formatter.format(writer);
+        try writer.writeByte('\n');
+    }
 
     return .{ .text = try aw.toOwnedSlice() };
 }
@@ -321,6 +364,37 @@ test "capture excludes the ghostty-ai command" {
             result.text,
         );
     }
+}
+
+test "capture skips earlier ghostty-ai commands" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var t = try testTerminal(alloc, comptime testCommand("one", "1\r\n") ++
+        testCommand("ghostty-ai 1 first", "") ++
+        testCommand("two", "2\r\n") ++
+        testCommand("ghostty-ai 1 second", "") ++
+        testRunning("ghostty-ai 2 third"));
+    defer t.deinit(alloc);
+    try t.setPwd("/p");
+
+    const result = try capture(alloc, &t, 2);
+    defer result.deinit(alloc);
+    try testing.expectEqualStrings(
+        "# Terminal history captured by Ghostty (last 2 commands, cwd /p)\n\n" ++
+            "$ one\n1\n$ two\n2\n",
+        result.text,
+    );
+}
+
+test "capture with only ghostty-ai before ghostty-ai" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var t = try testTerminal(alloc, comptime testCommand("ghostty-ai", "") ++
+        testRunning("ghostty-ai"));
+    defer t.deinit(alloc);
+    try testing.expectEqual(Capture.no_commands, try capture(alloc, &t, 5));
 }
 
 test "capture with nothing before ghostty-ai" {
