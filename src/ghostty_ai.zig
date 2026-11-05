@@ -170,6 +170,22 @@ pub fn formatTitle(
     return written[0 .. written.len - 1 :0];
 }
 
+/// Write the message a follow-up request sends to the `ghostty-ai` split
+/// that is already open: the note (if any), a blank line, then the
+/// capture. The caller pastes it into the split and presses Enter.
+pub fn writeFollowUp(
+    writer: *std.Io.Writer,
+    note: []const u8,
+    capture_text: []const u8,
+) std.Io.Writer.Error!void {
+    const trimmed = std.mem.trim(u8, note, " \t\n");
+    if (trimmed.len > 0) {
+        try writer.writeAll(trimmed);
+        try writer.writeAll("\n\n");
+    }
+    try writer.writeAll(std.mem.trimEnd(u8, capture_text, "\n"));
+}
+
 /// Returns the command as a string for `/bin/sh -c`. A `shell:` command is
 /// used as is. Each argument of a `direct:` command is single-quoted, so
 /// nothing in it is expanded. Returns null for an empty command.
@@ -334,6 +350,31 @@ test "isValidNote" {
     try testing.expect(!isValidNote("cr\r"));
     try testing.expect(!isValidNote("nul\x00"));
     try testing.expect(!isValidNote("del\x7f"));
+}
+
+test "writeFollowUp" {
+    const testing = std.testing;
+    var buf: [256]u8 = undefined;
+    const capture_text = "# header\n\n$ make\nerror\n\n";
+
+    {
+        var writer: std.Io.Writer = .fixed(&buf);
+        try writeFollowUp(&writer, "  and now?\n", capture_text);
+        try testing.expectEqualStrings(
+            "and now?\n\n# header\n\n$ make\nerror",
+            writer.buffered(),
+        );
+    }
+
+    // No note: only the capture.
+    {
+        var writer: std.Io.Writer = .fixed(&buf);
+        try writeFollowUp(&writer, " \t\n", capture_text);
+        try testing.expectEqualStrings(
+            "# header\n\n$ make\nerror",
+            writer.buffered(),
+        );
+    }
 }
 
 test "formatTitle" {

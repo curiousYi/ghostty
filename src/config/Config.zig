@@ -2528,15 +2528,29 @@ keybind: Keybinds = .{},
 /// a private temporary file (mode 0600). Ghostty then opens a split to the
 /// right of the current one, runs this command in it, and titles the split
 /// `ghostty-ai: N commands — <note>`. The capture file is deleted when the
-/// split closes, or when the terminal that opened it closes. Only one
-/// `ghostty-ai` split per terminal can be open at a time. Ghostty only moves
-/// text: it never talks to an LLM provider or holds an API key. The
+/// split closes, or when the terminal that opened it closes. Ghostty only
+/// moves text: it never talks to an LLM provider or holds an API key. The
 /// configured tool does that.
+///
+/// Each terminal has at most one `ghostty-ai` split. If you run
+/// `ghostty-ai` again while that split is open, Ghostty does not open
+/// another one: it sends the note and the new capture to the open split
+/// as a follow-up. It pastes them into the program there (as a bracketed
+/// paste) and presses Enter, so with the default they arrive as your next
+/// message in the same Claude session. The follow-up is refused if the
+/// program in the split has not enabled bracketed paste.
+///
+/// The Enter answers whatever the program in the split is showing at that
+/// moment. With the default nothing else can be showing, but with a tool
+/// that asks for permission before acting (for example `--tools
+/// "Read,Grep,Glob"` below), a follow-up that arrives while a permission
+/// prompt is open can answer that prompt.
 ///
 /// The function is defined by the `ghostty-ai` feature of
 /// `shell-integration-features`, which is on by default. If a request is
-/// refused (for example, a split is already open or this option is empty),
-/// Ghostty shows a desktop notification saying why.
+/// refused (for example, the program in the split does not accept pasted
+/// text or this option is empty), Ghostty shows a desktop notification
+/// saying why.
 ///
 /// The command is run with `/bin/sh -c` and receives these environment
 /// variables:
@@ -2602,6 +2616,9 @@ keybind: Keybinds = .{},
 ///     dropped and only logged.
 ///
 ///   * Only one `ghostty-ai` split per terminal can be open at a time.
+///     Later requests are pasted into it as follow-ups, so a spoofed
+///     request can type into that split, but only as a bracketed paste
+///     with control bytes removed, followed by Enter.
 ///
 ///   * The split's title shows the request (`ghostty-ai: N commands —
 ///     <note>`) and the program in the split cannot change it.

@@ -553,6 +553,18 @@ pub fn ghosttyAiSplitClosed(self: *App, id: u64) void {
     }
 }
 
+/// Returns the ghostty-ai split launched by the request with the given id,
+/// or null if it doesn't exist (yet, or any more).
+pub fn ghosttyAiSplitSurface(self: *App, id: u64) ?*Surface {
+    for (self.surfaces.items) |rt_surface| {
+        const surface = rt_surface.core();
+        if (surface.ghostty_ai_parent) |parent| {
+            if (parent == id) return surface;
+        }
+    }
+    return null;
+}
+
 fn hasSurface(self: *const App, surface: *const Surface) bool {
     for (self.surfaces.items) |v| {
         if (v.core() == surface) return true;
