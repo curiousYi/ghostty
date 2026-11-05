@@ -2549,15 +2549,29 @@ keybind: Keybinds = .{},
 ///
 /// The default is:
 ///
-///     claude --tools "" --append-system-prompt "$(cat "$GHOSTTY_AI_FILE")" "$GHOSTTY_AI_NOTE"
+///     claude --tools "" --strict-mcp-config --append-system-prompt "$(cat "$GHOSTTY_AI_FILE")" "$GHOSTTY_AI_NOTE"
 ///
 /// This runs Claude Code with the capture as extra system prompt and the
-/// note as the first message. `--tools ""` disables every Claude tool, so
-/// the default can only give text advice: it cannot run commands, read
-/// other files, or edit anything. If you point this at an agent that can
-/// run commands or has other tool permissions, you accept more risk,
-/// because the captured history can contain text written by any program
-/// you ran (see `ghostty-ai-access`).
+/// note as the first message. `--tools ""` disables every built-in Claude
+/// tool, and `--strict-mcp-config` (with no `--mcp-config`) loads no MCP
+/// servers, so the default can only give text advice: it cannot run
+/// commands, read other files, edit anything, or call connected services.
+/// If you point this at an agent that can run commands or has other tool
+/// permissions, you accept more risk, because the captured history can
+/// contain text written by any program you ran (see `ghostty-ai-access`).
+///
+/// To let Claude look at files in the split's working directory as well,
+/// while still keeping it from editing, running commands, or using the
+/// network, allow only the read-only tools:
+///
+///     claude --tools "Read,Grep,Glob" --strict-mcp-config --append-system-prompt "$(cat "$GHOSTTY_AI_FILE")" "$GHOSTTY_AI_NOTE"
+///
+/// This is a trade-off: text in the capture can then steer Claude into
+/// reading files you did not mean to share with it. Add `--restricted` to
+/// also confine those reads to the working directory.
+///
+/// `--tools` takes any number of values, so it must not come directly
+/// before the note: keep another flag after it, or write `--tools=""`.
 ///
 /// Known limitation: the default passes the whole capture as a single
 /// argument. Linux limits a single argument to about 128 KB
@@ -2569,7 +2583,7 @@ keybind: Keybinds = .{},
 /// `direct:` command is not shell-expanded, so `$GHOSTTY_AI_*` references
 /// in it are not expanded either.
 @"ghostty-ai-command": ?Command = .{
-    .shell = "claude --tools \"\" --append-system-prompt \"$(cat \"$GHOSTTY_AI_FILE\")\" \"$GHOSTTY_AI_NOTE\"",
+    .shell = "claude --tools \"\" --strict-mcp-config --append-system-prompt \"$(cat \"$GHOSTTY_AI_FILE\")\" \"$GHOSTTY_AI_NOTE\"",
 },
 
 /// Whether programs running in the terminal may start `ghostty-ai`
@@ -10990,7 +11004,7 @@ test "ghostty-ai default and parse" {
         const cmd = cfg.@"ghostty-ai-command".?;
         try testing.expect(cmd == .shell);
         try testing.expectEqualStrings(
-            "claude --tools \"\" --append-system-prompt \"$(cat \"$GHOSTTY_AI_FILE\")\" \"$GHOSTTY_AI_NOTE\"",
+            "claude --tools \"\" --strict-mcp-config --append-system-prompt \"$(cat \"$GHOSTTY_AI_FILE\")\" \"$GHOSTTY_AI_NOTE\"",
             cmd.shell,
         );
     }
