@@ -178,8 +178,8 @@ if [[ "$GHOSTTY_SHELL_FEATURES" == *"ghostty-ai"* ]]; then
       len=$(( ${#b64} / 4 * 3 ))
       [[ "$b64" == *"=" ]] && len=$((len - 1))
       [[ "$b64" == *"==" ]] && len=$((len - 1))
-      if (( len > 255 )); then
-        builtin printf 'ghostty-ai: the note is %d bytes, the limit is 255\n' "$len" >&2
+      if (( len > 1024 )); then
+        builtin printf 'ghostty-ai: the note is %d bytes, the limit is 1024\n' "$len" >&2
         builtin return 1
       fi
       builtin printf '\e]6767;ai;count=%s;note=%s\e\\' "$count" "$b64"

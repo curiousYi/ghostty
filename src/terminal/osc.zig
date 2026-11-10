@@ -21,6 +21,7 @@ pub const color = parsers.color;
 pub const semantic_prompt = parsers.semantic_prompt;
 pub const program_status = parsers.program_status;
 pub const hierarchical_context = parsers.hierarchical_context;
+pub const max_ghostty_ai_note_bytes = parsers.ghostty.max_note_bytes;
 
 const log = std.log.scoped(.osc);
 

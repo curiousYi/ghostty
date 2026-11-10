@@ -182,8 +182,8 @@ function __ghostty_setup --on-event fish_prompt -d "Setup ghostty integration"
                 set -l len (math (string length -- $b64) / 4 \* 3)
                 string match -q -- '*=' $b64; and set len (math $len - 1)
                 string match -q -- '*==' $b64; and set len (math $len - 1)
-                if test $len -gt 255
-                    echo "ghostty-ai: the note is $len bytes, the limit is 255" >&2
+                if test $len -gt 1024
+                    echo "ghostty-ai: the note is $len bytes, the limit is 1024" >&2
                     return 1
                 end
                 printf '\e]6767;ai;count=%s;note=%s\e\\\\' $count $b64

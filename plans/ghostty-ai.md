@@ -141,7 +141,7 @@ ESC ] 6767 ; ai ; count=<n> ; note=<base64> ST
   appear at most once.
   - `count` is required, a decimal integer from 1 to 99.
   - `note` is optional, standard base64 (RFC 4648, padded), and must decode
-    to valid UTF-8 of at most **255 bytes**. An empty or missing note means
+    to valid UTF-8 of at most **1024 bytes**. An empty or missing note means
     no note.
   - Unknown keys are ignored, which leaves room for later additions.
   - A duplicate key, a malformed count, bad base64, invalid UTF-8, or an
@@ -149,10 +149,15 @@ ESC ] 6767 ; ai ; count=<n> ; note=<base64> ST
     and logged.
 - **Terminators:** both ST (`ESC \`) and BEL are accepted, as with other OSCs.
   The shell functions emit ST.
-- **Note limit:** the shell function rejects a note longer than 255 bytes
-  with an error on stderr, instead of truncating it silently. 255 bytes
-  matches `DesktopNotification.body` and keeps the surface message
-  fixed-size.
+- **Note limit:** the shell function rejects a note longer than 1024 bytes
+  with an error on stderr, instead of truncating it silently. **Changed
+  2026-11-05:** the limit was 255 bytes, to match `DesktopNotification.body`
+  and keep the surface message fixed-size. A 406-byte question failed in
+  manual testing. The request is heap-allocated since Step 2, and the note
+  never goes into a notification (only refusal reasons do; the split title
+  shortens long notes itself), so the limit is now set by the parser's fixed
+  2048-byte OSC buffer: 1024 bytes is 1368 base64 characters, which leaves
+  room. A comptime check in the parser keeps it that way.
 
 ### C0.4 Surface message (WS-C produces, Step 2 consumes)
 
@@ -173,7 +178,7 @@ ghostty_ai_request: *GhosttyAiRequest,   // receiver must destroy()
 pub const GhosttyAiRequest = struct {
     alloc: Allocator,
     count: u8,                  // 1-99, already validated by the parser
-    note: [255:0]u8,            // UTF-8, NUL-terminated, may be empty
+    note: [1024:0]u8,           // UTF-8, NUL-terminated, may be empty
     capture: ghostty_ai.Capture, // .text (header + plain text), .alternate_screen, .no_commands
 };
 ```

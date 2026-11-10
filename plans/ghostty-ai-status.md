@@ -80,7 +80,7 @@ command looks idle.
 
 - Format: `ESC ] 6767 ; ai ; count=N ; note=<base64> ST|BEL`.
 - Path: parser → `Command.ghostty_ai` → stream action `ghostty_ai_request` →
-  `termio/stream_handler.zig` → `apprt.surface.Message.ghostty_ai_request { count: u8, note: [255:0]u8 }`
+  `termio/stream_handler.zig` → `apprt.surface.Message.ghostty_ai_request { count: u8, note: [1024:0]u8 }`
   → `Surface.handleMessage`.
 - Stub: `src/Surface.zig:1154` only logs the request.
 - libghostty-vt (`stream_terminal.zig`) logs the request as unimplemented.
@@ -101,7 +101,7 @@ command looks idle.
   `404` and `2fa` are note text. The default count is 5.
 - `--` is honoured only first or right after a count.
 - `-h`/`--help` prints usage only as the first argument.
-- The function errors if the note is over 255 bytes, and leaves out `;note=`
+- The function errors if the note is over 1024 bytes (255 before 2026-11-05), and leaves out `;note=`
   when the note is empty.
 - zsh writes to `$_ghostty_fd` (the tty). bash and fish write to stdout, like
   their other sequences.
