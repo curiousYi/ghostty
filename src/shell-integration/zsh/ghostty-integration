@@ -389,8 +389,8 @@ _ghostty_deferred_init() {
           (( len = ${#b64} / 4 * 3 ))
           [[ $b64 == *= ]] && (( len-- ))
           [[ $b64 == *== ]] && (( len-- ))
-          if (( len > 255 )); then
-            builtin print -ru2 -- "ghostty-ai: the note is $len bytes, the limit is 255"
+          if (( len > 1024 )); then
+            builtin print -ru2 -- "ghostty-ai: the note is $len bytes, the limit is 1024"
             builtin return 1
           fi
           builtin print -rnu $_ghostty_fd -- $'\e]6767;ai;count='$count';note='$b64$'\e\\'

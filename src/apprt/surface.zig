@@ -69,7 +69,7 @@ pub const Message = union(enum) {
         count: u8,
 
         /// The decoded note: UTF-8, NUL-terminated, may be empty.
-        note: [255:0]u8,
+        note: [terminal.osc.max_ghostty_ai_note_bytes:0]u8,
 
         /// The captured commands, owned by this request.
         capture: ghostty_ai.Capture,
@@ -323,7 +323,7 @@ test "GhosttyAiRequest create" {
     defer empty.destroy();
     try std.testing.expectEqualStrings("", std.mem.sliceTo(&empty.note, 0));
 
-    const full: [255]u8 = @splat('a');
+    const full: [terminal.osc.max_ghostty_ai_note_bytes]u8 = @splat('a');
     const max = try GhosttyAiRequest.create(alloc, 99, &full, .alternate_screen);
     defer max.destroy();
     try std.testing.expectEqualStrings(&full, std.mem.sliceTo(&max.note, 0));

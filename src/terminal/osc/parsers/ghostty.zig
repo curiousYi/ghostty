@@ -45,10 +45,16 @@ const OSCCommand = osc.Command;
 
 const log = std.log.scoped(.osc_ghostty);
 
-/// The longest note after base64 decoding, in bytes. This matches the
-/// fixed-size body of a desktop notification so the surface message
-/// that carries the note stays fixed-size.
-pub const max_note_bytes = 255;
+/// The longest note after base64 decoding, in bytes. The whole request
+/// must fit in the parser's fixed buffer, which this leaves room for.
+pub const max_note_bytes = 1024;
+
+comptime {
+    // "ai;count=99;note=" plus the padded base64 of the longest note.
+    const longest = "ai;count=99;note=".len +
+        std.base64.standard.Encoder.calcSize(max_note_bytes);
+    if (longest > Parser.MAX_BUF) @compileError("max_note_bytes does not fit in the OSC buffer");
+}
 
 /// The smallest and largest `count`.
 pub const min_count = 1;
@@ -391,7 +397,7 @@ test "OSC 6767: ai note of exactly max_note_bytes is accepted" {
     var p: Parser = .init(null);
     defer p.deinit();
 
-    var buf: [512]u8 = undefined;
+    var buf: [Parser.MAX_BUF]u8 = undefined;
     const input = try noteOfLen(&buf, max_note_bytes);
     const cmd = testParse(&p, input, '\x1b').?.*;
     try testing.expectEqual(@as(usize, max_note_bytes), cmd.ghostty_ai.note.len);
@@ -402,7 +408,7 @@ test "OSC 6767: ai note over max_note_bytes is rejected" {
     var p: Parser = .init(null);
     defer p.deinit();
 
-    var buf: [512]u8 = undefined;
+    var buf: [Parser.MAX_BUF]u8 = undefined;
     const input = try noteOfLen(&buf, max_note_bytes + 1);
     try testing.expect(testParse(&p, input, '\x1b') == null);
 }
