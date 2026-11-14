@@ -1041,11 +1041,9 @@ extension Ghostty {
             let command = String(cString: details.command)
             let title = String(cString: details.title)
             var environmentVariables: [String: String] = [:]
-            if details.env_var_count > 0, let envVars = details.env_vars {
-                for i in 0..<details.env_var_count {
-                    let envVar = envVars[i]
-                    environmentVariables[String(cString: envVar.key)] = String(cString: envVar.value)
-                }
+            for i in 0..<details.env_var_count {
+                let envVar = details.env_vars[i]
+                environmentVariables[String(cString: envVar.key)] = String(cString: envVar.value)
             }
 
             // Inherit from the parent the same way a normal split does
